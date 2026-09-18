@@ -2,7 +2,8 @@
 
 a lightweight static dynamic upside down and right up again analaysis tool for git.
 
-> [!NOTE] This project was written with heavy use of llm's
+> [!NOTE]
+> This project was written with heavy use of llm's
 > Its all over the place and i wouldn't look at it yet. Just prototyping here.
 
 ## Features
