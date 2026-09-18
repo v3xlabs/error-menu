@@ -1,0 +1,9 @@
+---
+source: tests/lockfile.rs
+expression: report(&findings)
+---
+[
+    "Critical: integrity of flake-utils changed without a version change — flake-utils 11707dc2f618dd54ca8739b309ec4fc024de578b keeps its version and source but its integrity changed from sha256-l0KFg5HjrsfsO/JpG+r7fRrqm12kzFHyUHqHCVpMMbI= to sha256-TAMPEREDTAMPEREDTAMPEREDTAMPEREDTAMPEREDTAM=",
+    "Medium: telemetry-shim was added from outside a registry — telemetry-shim a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4 is new and resolves from git:https://example.invalid/telemetry-shim, which no registry reviewed",
+    "Info: nixpkgs moved to c3eea5b2156db11c7eeeada3dc737711255b253e — nixpkgs changed from ef34387ddd751e1ab8857adf4676492d32eb24ec to c3eea5b2156db11c7eeeada3dc737711255b253e",
+]

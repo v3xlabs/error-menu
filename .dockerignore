@@ -1,0 +1,9 @@
+.direnv
+.git
+.pnpm-store
+.tmp
+target
+web/.tmp
+web/node_modules
+web/dist
+error-menu.db

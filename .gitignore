@@ -1,0 +1,9 @@
+/target
+/.tmp
+/result
+*.db
+*.db-shm
+*.db-wal
+.envrc
+.direnv/
+/.pnpm-store

@@ -1,0 +1,10 @@
+---
+source: tests/lockfile.rs
+expression: report(&findings)
+---
+[
+    "High: @floating-ui/dom changed where it resolves from — @floating-ui/dom 1.6.13 now resolves from https://cdn.example.invalid/floating-ui-dom-1.6.13.tgz instead of https://registry.npmjs.org/@floating-ui/dom/-/dom-1.6.13.tgz",
+    "Critical: integrity of @kobalte/core changed without a version change — @kobalte/core 0.13.14 keeps its version and source but its integrity changed from sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA== to sha512-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ==",
+    "Medium: telemetry-shim was added from outside a registry — telemetry-shim 0.1.0 is new and resolves from git+ssh://git@example.invalid/telemetry-shim.git#a1b2c3d4, which no registry reviewed",
+    "Info: vite moved to 7.1.1 — vite was upgraded from 7.1.0 to 7.1.1",
+]

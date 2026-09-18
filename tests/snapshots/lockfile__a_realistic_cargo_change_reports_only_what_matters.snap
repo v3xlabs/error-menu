@@ -1,0 +1,11 @@
+---
+source: tests/lockfile.rs
+expression: report(&findings)
+---
+[
+    "High: arrayvec changed where it resolves from — arrayvec 0.7.8 now resolves from git+https://example.invalid/arrayvec?rev=deadbeef#deadbeef0123456789abcdef0123456789abcdef instead of registry+https://github.com/rust-lang/crates.io-index",
+    "Critical: integrity of cfg-if changed without a version change — cfg-if 1.0.4 keeps its version and source but its integrity changed from 0e1d2c3b4a5968778695a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3 to ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "Medium: telemetry-shim was added from outside a registry — telemetry-shim 0.1.0 is new and resolves from git+https://example.invalid/telemetry-shim#a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4, which no registry reviewed",
+    "Info: serde moved to 1.0.230 — serde was upgraded from 1.0.229 to 1.0.230",
+    "Info: serde_derive moved to 1.0.230 — serde_derive was upgraded from 1.0.229 to 1.0.230",
+]

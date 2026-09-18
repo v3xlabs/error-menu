@@ -1,0 +1,54 @@
+---
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      '@solidjs/router':
+        specifier: ^0.15.0
+        version: 0.15.0(solid-js@1.9.3)
+      internal-tool:
+        specifier: https://example.invalid/internal-tool-1.0.0.tgz
+        version: '@example.invalid/internal-tool-1.0.0.tgz'
+      solid-js:
+        specifier: ^1.9.3
+        version: 1.9.3
+
+packages:
+
+  '@solidjs/router@0.15.0':
+    resolution: {integrity: sha512-cm9vdGVyLWJhc2UtaW50ZWdyaXR5LXZhbHVlLWZvci10ZXN0cw==}
+    peerDependencies:
+      solid-js: ^1.8.6
+
+  internal-tool@1.0.0:
+    resolution: {tarball: https://example.invalid/internal-tool-1.0.0.tgz}
+    version: 1.0.0
+
+  seroval@1.1.2:
+    resolution: {integrity: sha512-c2Vyb3ZhbC1iYXNlLWludGVncml0eS12YWx1ZS1mb3ItdGVzdHM=}
+    engines: {node: '>=10'}
+
+  solid-js@1.9.3:
+    resolution: {integrity: sha512-c29saWQtanMtYmFzZS1pbnRlZ3JpdHktdmFsdWUtZm9yLXRlc3Rz}
+
+snapshots:
+
+  '@solidjs/router@0.15.0(solid-js@1.9.3)':
+    dependencies:
+      solid-js: 1.9.3
+
+  internal-tool@1.0.0: {}
+
+  seroval@1.1.2: {}
+
+  solid-js@1.9.3:
+    dependencies:
+      seroval: 1.1.2
+
+---

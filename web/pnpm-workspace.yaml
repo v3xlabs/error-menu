@@ -1,0 +1,9 @@
+allowBuilds:
+  unrs-resolver: false
+
+# Kobalte's alpha pins solid-js and @solidjs/web to exactly 2.0.0-rc.3, while the vite
+# plugin depends on the compiler with a caret, which resolves to rc.8. The newer compiler
+# emits calls the rc.3 runtime does not export, so the compiler is held at the runtime.
+overrides:
+  "@solidjs/babel-plugin": 2.0.0-rc.3
+  "@solidjs/compiler": 2.0.0-rc.3

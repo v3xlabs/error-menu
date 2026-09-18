@@ -1,0 +1,73 @@
+# Trimmed from a real workspace. Keeps the shapes that matter: workspace members with no
+# source, registry packages, a git dependency, and two versions of one crate side by side.
+version = 4
+
+[[package]]
+name = "error-menu"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "serde",
+ "shared-helper",
+]
+
+[[package]]
+name = "error-menu-worker"
+version = "0.1.0"
+dependencies = [
+ "error-menu",
+]
+
+[[package]]
+name = "blake3"
+version = "1.8.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8d4b7f2a1c9e6a30d4c5e9b2f1a8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b"
+dependencies = [
+ "arrayvec",
+ "cfg-if",
+]
+
+[[package]]
+name = "arrayvec"
+version = "0.7.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
+
+[[package]]
+name = "cfg-if"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e1d2c3b4a5968778695a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3"
+
+[[package]]
+name = "serde"
+version = "1.0.229"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c8b7a6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b"
+dependencies = [
+ "serde_derive",
+]
+
+[[package]]
+name = "serde_derive"
+version = "1.0.229"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f2e3d4c5b6a79880a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f"
+
+[[package]]
+name = "syn"
+version = "2.0.119"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071829"
+
+[[package]]
+name = "syn"
+version = "3.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4"
+
+[[package]]
+name = "shared-helper"
+version = "0.4.2"
+source = "git+https://example.invalid/shared-helper?branch=main#7c2f1a9d3b5e8046f1a2b3c4d5e6f708192a3b4c"
