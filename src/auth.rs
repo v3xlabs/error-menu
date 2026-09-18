@@ -13,7 +13,7 @@ use rand::{Rng, rng};
 use serde::Deserialize;
 use url::Url;
 
-use crate::store::Store;
+use crate::store::{Store, StoreError};
 use crate::user::User;
 
 const GITHUB_ISSUER: &str = "https://github.com";
@@ -23,17 +23,37 @@ const ATTEMPT_SECONDS: u64 = 600;
 const SESSION_COOKIE: &str = "__Host-error-menu-session";
 const STATE_COOKIE: &str = "__Host-error-menu-oauth-state";
 
+fn log_store_error(operation: &'static str, error: &StoreError) {
+    match error.database_code() {
+        Some(database_code) => tracing::error!(
+            operation,
+            error_kind = error.kind(),
+            database_code,
+            "authentication storage operation failed"
+        ),
+        None => tracing::error!(
+            operation,
+            error_kind = error.kind(),
+            "authentication storage operation failed"
+        ),
+    }
+}
+
 fn cookie_value(request: &Request, name: &str) -> Option<String> {
-    request.headers().get_all("cookie").iter().find_map(|value| {
-        value.to_str().ok().and_then(|header| {
-            header.split(';').map(str::trim).find_map(|item| {
-                Cookie::parse(item)
-                    .ok()
-                    .filter(|cookie| cookie.name() == name)
-                    .map(|cookie| cookie.value_str().to_owned())
+    request
+        .headers()
+        .get_all("cookie")
+        .iter()
+        .find_map(|value| {
+            value.to_str().ok().and_then(|header| {
+                header.split(';').map(str::trim).find_map(|item| {
+                    Cookie::parse(item)
+                        .ok()
+                        .filter(|cookie| cookie.name() == name)
+                        .map(|cookie| cookie.value_str().to_owned())
+                })
             })
         })
-    })
 }
 
 fn clear_cookie(mut response: Response, name: &str) -> Response {
@@ -43,7 +63,10 @@ fn clear_cookie(mut response: Response, name: &str) -> Response {
     cookie.set_http_only(true);
     cookie.set_same_site(SameSite::Lax);
     cookie.make_removal();
-    response.headers_mut().append("set-cookie", cookie.to_string().parse().expect("valid cookie"));
+    response.headers_mut().append(
+        "set-cookie",
+        cookie.to_string().parse().expect("valid cookie"),
+    );
     response
 }
 
@@ -113,15 +136,20 @@ where
         let Some(token) = cookie_value(&request, SESSION_COOKIE) else {
             return Ok(unauthenticated());
         };
-        let user = self
+        let user = match self
             .store
             .user_for_session(
                 &blake3::hash(token.as_bytes()).to_hex().to_string(),
                 Timestamp::now(),
             )
             .await
-            .ok()
-            .flatten();
+        {
+            Ok(user) => user,
+            Err(error) => {
+                log_store_error("lookup_session", &error);
+                None
+            }
+        };
         let Some(user) = user else {
             return Ok(unauthenticated());
         };
@@ -218,13 +246,18 @@ impl GithubAuth {
 async fn login(Data(auth): Data<&Arc<GithubAuth>>) -> Response {
     let state = GithubAuth::random_token();
     let expires_at = Timestamp::now() + std::time::Duration::from_secs(ATTEMPT_SECONDS);
-    if auth
+    if let Err(error) = auth
         .store
-        .create_auth_attempt(&blake3::hash(state.as_bytes()).to_hex().to_string(), expires_at)
+        .create_auth_attempt(
+            &blake3::hash(state.as_bytes()).to_hex().to_string(),
+            expires_at,
+        )
         .await
-        .is_err()
     {
-        return Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).finish();
+        log_store_error("create_auth_attempt", &error);
+        return Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .finish();
     }
     let mut url = Url::parse("https://github.com/login/oauth/authorize").expect("valid GitHub URL");
     url.query_pairs_mut()
@@ -257,11 +290,17 @@ async fn callback(
         return clear_state_cookie(Response::builder().status(StatusCode::BAD_REQUEST).finish());
     }
     let state_hash = blake3::hash(callback.state.as_bytes()).to_hex().to_string();
-    let valid = auth
+    let valid = match auth
         .store
         .consume_auth_attempt(&state_hash, Timestamp::now())
         .await
-        .unwrap_or(false);
+    {
+        Ok(valid) => valid,
+        Err(error) => {
+            log_store_error("consume_auth_attempt", &error);
+            false
+        }
+    };
     if !valid {
         return clear_state_cookie(Response::builder().status(StatusCode::BAD_REQUEST).finish());
     }
@@ -281,9 +320,25 @@ async fn callback(
     {
         Ok(response) => match response.json::<TokenResponse>().await {
             Ok(token) => token,
-            Err(_) => return clear_state_cookie(Response::builder().status(StatusCode::BAD_GATEWAY).finish()),
+            Err(_) => {
+                tracing::error!(
+                    operation = "decode_github_token_response",
+                    "GitHub OAuth operation failed"
+                );
+                return clear_state_cookie(
+                    Response::builder().status(StatusCode::BAD_GATEWAY).finish(),
+                );
+            }
         },
-        Err(_) => return clear_state_cookie(Response::builder().status(StatusCode::BAD_GATEWAY).finish()),
+        Err(_) => {
+            tracing::error!(
+                operation = "exchange_github_code",
+                "GitHub OAuth operation failed"
+            );
+            return clear_state_cookie(
+                Response::builder().status(StatusCode::BAD_GATEWAY).finish(),
+            );
+        }
     };
     let github_user = match auth
         .client
@@ -296,9 +351,25 @@ async fn callback(
     {
         Ok(response) => match response.json::<GithubUser>().await {
             Ok(user) => user,
-            Err(_) => return clear_state_cookie(Response::builder().status(StatusCode::BAD_GATEWAY).finish()),
+            Err(_) => {
+                tracing::error!(
+                    operation = "decode_github_user_response",
+                    "GitHub OAuth operation failed"
+                );
+                return clear_state_cookie(
+                    Response::builder().status(StatusCode::BAD_GATEWAY).finish(),
+                );
+            }
         },
-        Err(_) => return clear_state_cookie(Response::builder().status(StatusCode::BAD_GATEWAY).finish()),
+        Err(_) => {
+            tracing::error!(
+                operation = "fetch_github_user",
+                "GitHub OAuth operation failed"
+            );
+            return clear_state_cookie(
+                Response::builder().status(StatusCode::BAD_GATEWAY).finish(),
+            );
+        }
     };
     let Some(user) = (match auth
         .store
@@ -311,13 +382,20 @@ async fn callback(
         .await
     {
         Ok(user) => user,
-        Err(_) => return clear_state_cookie(Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).finish()),
+        Err(error) => {
+            log_store_error("register_user", &error);
+            return clear_state_cookie(
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .finish(),
+            );
+        }
     }) else {
         return clear_state_cookie(Response::builder().status(StatusCode::FORBIDDEN).finish());
     };
     let session = GithubAuth::random_token();
     let expires_at = Timestamp::now() + std::time::Duration::from_secs(SESSION_SECONDS);
-    if auth
+    if let Err(error) = auth
         .store
         .create_session(
             user.id,
@@ -325,9 +403,13 @@ async fn callback(
             expires_at,
         )
         .await
-        .is_err()
     {
-        return clear_state_cookie(Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).finish());
+        log_store_error("create_session", &error);
+        return clear_state_cookie(
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .finish(),
+        );
     }
     let mut session_cookie = Cookie::new_with_str(SESSION_COOKIE, session);
     session_cookie.set_http_only(true);
@@ -346,13 +428,19 @@ async fn callback(
 #[poem::handler]
 async fn logout(Data(auth): Data<&Arc<GithubAuth>>, request: &poem::Request) -> Response {
     if let Some(token) = cookie_value(request, SESSION_COOKIE) {
-        let _ = auth
+        if let Err(error) = auth
             .store
             .delete_session(&blake3::hash(token.as_bytes()).to_hex().to_string())
-            .await;
+            .await
+        {
+            log_store_error("delete_session", &error);
+        }
     }
 
-    clear_cookie(Response::builder().status(StatusCode::NO_CONTENT).finish(), SESSION_COOKIE)
+    clear_cookie(
+        Response::builder().status(StatusCode::NO_CONTENT).finish(),
+        SESSION_COOKIE,
+    )
 }
 
 #[cfg(test)]
@@ -363,6 +451,29 @@ mod tests {
     #[poem::handler]
     async fn protected(CurrentUser(user): CurrentUser) -> String {
         user.display_name
+    }
+
+    fn github_auth(store: Arc<Store>) -> Arc<GithubAuth> {
+        Arc::new(GithubAuth {
+            store,
+            client_id: "client".to_owned(),
+            client_secret: "secret".to_owned(),
+            callback_url: "https://error.menu/auth/github/callback".to_owned(),
+            allow_registration: true,
+            client: reqwest::Client::new(),
+        })
+    }
+
+    #[tokio::test]
+    async fn login_persists_state_before_redirecting() {
+        let store = Arc::new(Store::open("sqlite::memory:", 0).await.expect("opens"));
+        let client = TestClient::new(routes(github_auth(store)));
+
+        client
+            .get("/github/login")
+            .send()
+            .await
+            .assert_status(StatusCode::FOUND);
     }
 
     #[tokio::test]
@@ -437,14 +548,7 @@ mod tests {
             )
             .await
             .expect("stores session");
-        let auth = Arc::new(GithubAuth {
-            store: Arc::clone(&store),
-            client_id: "client".to_owned(),
-            client_secret: "secret".to_owned(),
-            callback_url: "https://error.menu/auth/github/callback".to_owned(),
-            allow_registration: true,
-            client: reqwest::Client::new(),
-        });
+        let auth = github_auth(Arc::clone(&store));
         let client = TestClient::new(routes(auth));
 
         let response = client
@@ -453,18 +557,22 @@ mod tests {
             .send()
             .await;
         response.assert_status(StatusCode::NO_CONTENT);
-        assert!(store
-            .user_for_session(&token_hash, Timestamp::now())
-            .await
-            .expect("reads session")
-            .is_none());
+        assert!(
+            store
+                .user_for_session(&token_hash, Timestamp::now())
+                .await
+                .expect("reads session")
+                .is_none()
+        );
     }
-
 }
 
 pub fn routes(auth: Arc<GithubAuth>) -> Route {
     Route::new()
         .at("/github/login", poem::get(login).data(Arc::clone(&auth)))
-        .at("/github/callback", poem::get(callback).data(Arc::clone(&auth)))
+        .at(
+            "/github/callback",
+            poem::get(callback).data(Arc::clone(&auth)),
+        )
         .at("/logout", poem::post(logout).data(auth))
 }
