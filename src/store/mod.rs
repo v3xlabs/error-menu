@@ -1,8 +1,9 @@
 use std::str::FromStr;
+use std::time::Duration;
 
 use jiff::Timestamp;
 use sqlx::error::DatabaseError;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqliteConnection, SqlitePool};
 
 use crate::analysis::ci_checks::{CheckConclusion, CheckRun, CheckStatus};
@@ -89,11 +90,14 @@ pub struct AnalysisRunRecord {
 }
 
 impl Store {
-    /// One connection: SQLite takes one writer at a time, and the app is the only writer.
     pub async fn open(url: &str, node: u16) -> Result<Self, StoreError> {
-        let options = SqliteConnectOptions::from_str(url)?.create_if_missing(true);
+        let options = SqliteConnectOptions::from_str(url)?
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(10));
+        let max_connections = if url == "sqlite::memory:" { 1 } else { 4 };
         let pool = SqlitePoolOptions::new()
-            .max_connections(1)
+            .max_connections(max_connections)
             .connect_with(options)
             .await?;
         sqlx::migrate!("./migrations").run(&pool).await?;

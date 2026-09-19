@@ -3,6 +3,8 @@ pub mod avatar;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use jiff::Timestamp;
+
 use poem::http::StatusCode;
 use poem::{EndpointExt, Route, middleware::Tracing};
 use poem_openapi::{
@@ -13,7 +15,7 @@ use crate::analysis::{
     RunStatus, ci_checks, hygiene, links, lockfile, manifest, repository_controls, runner, secret,
     workflow,
 };
-use crate::auth::CurrentUser;
+use crate::auth::{CurrentUser, SessionUser};
 use crate::discovery;
 use crate::finding::{Ecosystem, Finding, Location, Severity, VersionMovement};
 use crate::forge::{ChangeState, ForgeKind};
@@ -107,6 +109,34 @@ struct UserOutput {
 #[derive(Debug, Object)]
 struct UsersOutput {
     users: Vec<UserOutput>,
+}
+
+#[derive(Debug, Object)]
+#[oai(skip_serializing_if_is_none)]
+struct ApiTokenOutput {
+    name: String,
+    created_at: String,
+    expires_at: Option<String>,
+}
+
+#[derive(Debug, Object)]
+struct ApiTokensOutput {
+    tokens: Vec<ApiTokenOutput>,
+}
+
+#[derive(Debug, Object)]
+struct CreateApiToken {
+    name: String,
+    expires_at: Option<String>,
+}
+
+#[derive(Debug, Object)]
+#[oai(skip_serializing_if_is_none)]
+struct CreatedApiTokenOutput {
+    name: String,
+    token: String,
+    created_at: String,
+    expires_at: Option<String>,
 }
 
 #[derive(Debug, Object)]
@@ -728,6 +758,36 @@ enum ProjectMembersResponse {
     Failed(Json<Error>),
 }
 
+#[derive(ApiResponse)]
+enum ApiTokensResponse {
+    #[oai(status = 200)]
+    Found(Json<ApiTokensOutput>),
+    #[oai(status = 201)]
+    Created(Json<CreatedApiTokenOutput>),
+    #[oai(status = 400)]
+    Invalid(Json<Error>),
+    #[oai(status = 401)]
+    Unauthenticated(Json<Error>),
+    #[oai(status = 403)]
+    Forbidden(Json<Error>),
+    #[oai(status = 500)]
+    Failed(Json<Error>),
+}
+
+#[derive(ApiResponse)]
+enum RevokeApiTokenResponse {
+    #[oai(status = 204)]
+    Revoked,
+    #[oai(status = 401)]
+    Unauthenticated(Json<Error>),
+    #[oai(status = 403)]
+    Forbidden(Json<Error>),
+    #[oai(status = 404)]
+    Missing(Json<Error>),
+    #[oai(status = 500)]
+    Failed(Json<Error>),
+}
+
 struct Api {
     store: Arc<Store>,
     mirror_root: PathBuf,
@@ -741,6 +801,95 @@ impl Api {
             status: "ok".to_owned(),
             version: VERSION.to_owned(),
         })
+    }
+
+    #[oai(path = "/tokens", method = "get")]
+    async fn list_api_tokens(&self, SessionUser(user): SessionUser) -> ApiTokensResponse {
+        match self.store.list_api_tokens(user.id, Timestamp::now()).await {
+            Ok(tokens) => ApiTokensResponse::Found(Json(ApiTokensOutput {
+                tokens: tokens
+                    .into_iter()
+                    .map(|token| ApiTokenOutput {
+                        name: token.name,
+                        created_at: token.created_at.to_string(),
+                        expires_at: token.expires_at.map(|expires_at| expires_at.to_string()),
+                    })
+                    .collect(),
+            })),
+            Err(error) => {
+                ApiTokensResponse::Failed(Json(api_token_store_error("list_api_tokens", error)))
+            }
+        }
+    }
+
+    #[oai(path = "/tokens", method = "post")]
+    async fn create_api_token(
+        &self,
+        SessionUser(user): SessionUser,
+        input: Json<CreateApiToken>,
+    ) -> ApiTokensResponse {
+        let input = input.0;
+        let name = input.name.trim();
+        if name.is_empty() || name.len() > 128 {
+            return ApiTokensResponse::Invalid(Json(Error {
+                message: "token name must contain 1 to 128 bytes".to_owned(),
+            }));
+        }
+        let now = Timestamp::now();
+        let expires_at = match input
+            .expires_at
+            .as_deref()
+            .map(str::parse::<Timestamp>)
+            .transpose()
+        {
+            Ok(expires_at) => expires_at,
+            Err(_) => {
+                return ApiTokensResponse::Invalid(Json(Error {
+                    message: "token expiry must be an RFC 3339 timestamp".to_owned(),
+                }));
+            }
+        };
+        if expires_at.is_some_and(|expires_at| expires_at.as_millisecond() <= now.as_millisecond())
+        {
+            return ApiTokensResponse::Invalid(Json(Error {
+                message: "token expiry must be in the future".to_owned(),
+            }));
+        }
+        let token = format!("em_pat_{}", crate::auth::random_token());
+        let token_hash = blake3::hash(token.as_bytes()).to_hex().to_string();
+        match self
+            .store
+            .create_api_token(user.id, &token_hash, name, expires_at)
+            .await
+        {
+            Ok(stored) => ApiTokensResponse::Created(Json(CreatedApiTokenOutput {
+                name: stored.name,
+                token,
+                created_at: stored.created_at.to_string(),
+                expires_at: stored.expires_at.map(|expires_at| expires_at.to_string()),
+            })),
+            Err(error) => {
+                ApiTokensResponse::Failed(Json(api_token_store_error("create_api_token", error)))
+            }
+        }
+    }
+
+    #[oai(path = "/tokens/:name", method = "delete")]
+    async fn revoke_api_token(
+        &self,
+        SessionUser(user): SessionUser,
+        name: Path<String>,
+    ) -> RevokeApiTokenResponse {
+        match self.store.revoke_api_token(user.id, &name.0).await {
+            Ok(true) => RevokeApiTokenResponse::Revoked,
+            Ok(false) => RevokeApiTokenResponse::Missing(Json(Error {
+                message: "API token not found".to_owned(),
+            })),
+            Err(error) => RevokeApiTokenResponse::Failed(Json(api_token_store_error(
+                "revoke_api_token",
+                error,
+            ))),
+        }
     }
 
     #[oai(path = "/user", method = "get")]
@@ -798,7 +947,11 @@ impl Api {
             Err(_) => return UserResponse::Missing(Json(missing_user())),
         };
 
-        match self.store.set_user_role(user_id, input.0.role.into_role()).await {
+        match self
+            .store
+            .set_user_role(user_id, input.0.role.into_role())
+            .await
+        {
             Ok(UserRoleChange::Updated) => match self.store.user(user_id).await {
                 Ok(Some(user)) => UserResponse::Found(Json(user_output(user))),
                 Ok(None) => UserResponse::Missing(Json(missing_user())),
@@ -858,7 +1011,12 @@ impl Api {
         CurrentUser(user): CurrentUser,
         project_id: poem_openapi::param::Query<Option<String>>,
     ) -> ListJobsResponse {
-        let project_id = match project_id.0.as_deref().map(str::parse::<Id<Project>>).transpose() {
+        let project_id = match project_id
+            .0
+            .as_deref()
+            .map(str::parse::<Id<Project>>)
+            .transpose()
+        {
             Ok(project_id) => project_id,
             Err(error) => {
                 return ListJobsResponse::Invalid(Json(Error {
@@ -867,13 +1025,25 @@ impl Api {
             }
         };
         match project_id {
-            Some(project_id) => match project_access(&self.store, &user, project_id, ProjectPermission::Viewer).await {
-                ProjectAccess::Allowed { .. } => {}
-                ProjectAccess::Forbidden => return ListJobsResponse::Forbidden(Json(forbidden())),
-                ProjectAccess::Missing => return ListJobsResponse::Missing(Json(missing_project())),
-                ProjectAccess::Failed(message) => return ListJobsResponse::Failed(Json(Error { message })),
-            },
-            None if user.role != UserRole::Admin => return ListJobsResponse::Forbidden(Json(forbidden())),
+            Some(project_id) => {
+                match project_access(&self.store, &user, project_id, ProjectPermission::Viewer)
+                    .await
+                {
+                    ProjectAccess::Allowed { .. } => {}
+                    ProjectAccess::Forbidden => {
+                        return ListJobsResponse::Forbidden(Json(forbidden()));
+                    }
+                    ProjectAccess::Missing => {
+                        return ListJobsResponse::Missing(Json(missing_project()));
+                    }
+                    ProjectAccess::Failed(message) => {
+                        return ListJobsResponse::Failed(Json(Error { message }));
+                    }
+                }
+            }
+            None if user.role != UserRole::Admin => {
+                return ListJobsResponse::Forbidden(Json(forbidden()));
+            }
             None => {}
         }
 
@@ -948,31 +1118,50 @@ impl Api {
     ) -> GetProjectResponse {
         let project_id = match project_id.0.parse::<Id<Project>>() {
             Ok(project_id) => project_id,
-            Err(error) => return GetProjectResponse::Invalid(Json(Error { message: error.to_string() })),
+            Err(error) => {
+                return GetProjectResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
         };
         match project_access(&self.store, &user, project_id, ProjectPermission::Owner).await {
             ProjectAccess::Allowed { .. } => {}
             ProjectAccess::Forbidden => return GetProjectResponse::Forbidden(Json(forbidden())),
             ProjectAccess::Missing => return GetProjectResponse::Missing(Json(missing_project())),
-            ProjectAccess::Failed(message) => return GetProjectResponse::Failed(Json(Error { message })),
+            ProjectAccess::Failed(message) => {
+                return GetProjectResponse::Failed(Json(Error { message }));
+            }
         }
         let input = input.0;
-        let analyzers = input.analyzers.iter().copied().map(Analyzer::as_str).collect::<Vec<_>>();
+        let analyzers = input
+            .analyzers
+            .iter()
+            .copied()
+            .map(Analyzer::as_str)
+            .collect::<Vec<_>>();
         if let Err(error) = self
             .store
             .set_project_analyzers(project_id, input.uses_default_analyzers, &analyzers)
             .await
         {
-            return GetProjectResponse::Failed(Json(Error { message: error.to_string() }));
+            return GetProjectResponse::Failed(Json(Error {
+                message: error.to_string(),
+            }));
         }
 
         match self.store.project(project_id).await {
-            Ok(Some(project)) => match project_output(&self.store, project, ProjectRole::Owner).await {
-                Ok(output) => GetProjectResponse::Found(Json(output)),
-                Err(error) => GetProjectResponse::Failed(Json(Error { message: error.to_string() })),
-            },
+            Ok(Some(project)) => {
+                match project_output(&self.store, project, ProjectRole::Owner).await {
+                    Ok(output) => GetProjectResponse::Found(Json(output)),
+                    Err(error) => GetProjectResponse::Failed(Json(Error {
+                        message: error.to_string(),
+                    })),
+                }
+            }
             Ok(None) => GetProjectResponse::Missing(Json(missing_project())),
-            Err(error) => GetProjectResponse::Failed(Json(Error { message: error.to_string() })),
+            Err(error) => GetProjectResponse::Failed(Json(Error {
+                message: error.to_string(),
+            })),
         }
     }
 
@@ -987,22 +1176,44 @@ impl Api {
     ) -> AnalyzeProjectResponse {
         let project_id = match project_id.0.parse::<Id<Project>>() {
             Ok(project_id) => project_id,
-            Err(error) => return AnalyzeProjectResponse::Invalid(Json(Error { message: error.to_string() })),
+            Err(error) => {
+                return AnalyzeProjectResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
         };
         match project_access(&self.store, &user, project_id, ProjectPermission::Operator).await {
             ProjectAccess::Allowed { .. } => {}
-            ProjectAccess::Forbidden => return AnalyzeProjectResponse::Forbidden(Json(forbidden())),
-            ProjectAccess::Missing => return AnalyzeProjectResponse::Missing(Json(missing_project())),
-            ProjectAccess::Failed(message) => return AnalyzeProjectResponse::Failed(Json(Error { message })),
+            ProjectAccess::Forbidden => {
+                return AnalyzeProjectResponse::Forbidden(Json(forbidden()));
+            }
+            ProjectAccess::Missing => {
+                return AnalyzeProjectResponse::Missing(Json(missing_project()));
+            }
+            ProjectAccess::Failed(message) => {
+                return AnalyzeProjectResponse::Failed(Json(Error { message }));
+            }
         }
-        let snapshot = match discovery::scan_change(&self.store, &self.mirror_root, project_id, number.0).await {
+        let snapshot = match discovery::scan_change(
+            &self.store,
+            &self.mirror_root,
+            project_id,
+            number.0,
+        )
+        .await
+        {
             Ok(snapshot) => snapshot,
-            Err(discovery::DiscoveryError::ProjectNotFound) | Err(discovery::DiscoveryError::ChangeNotFound) => {
+            Err(discovery::DiscoveryError::ProjectNotFound)
+            | Err(discovery::DiscoveryError::ChangeNotFound) => {
                 return AnalyzeProjectResponse::Missing(Json(Error {
                     message: "that change has not been discovered yet".to_owned(),
                 }));
             }
-            Err(error) => return AnalyzeProjectResponse::Failed(Json(Error { message: error.to_string() })),
+            Err(error) => {
+                return AnalyzeProjectResponse::Failed(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
         };
 
         match self.store.analyses_for_project(project_id).await {
@@ -1010,7 +1221,9 @@ impl Api {
                 Ok(output) => AnalyzeProjectResponse::Created(Json(output)),
                 Err(message) => AnalyzeProjectResponse::Failed(Json(Error { message })),
             },
-            Err(error) => AnalyzeProjectResponse::Failed(Json(Error { message: error.to_string() })),
+            Err(error) => AnalyzeProjectResponse::Failed(Json(Error {
+                message: error.to_string(),
+            })),
         }
     }
 
@@ -1025,24 +1238,41 @@ impl Api {
     ) -> TreeResponse {
         let project_id = match project_id.0.parse::<Id<Project>>() {
             Ok(project_id) => project_id,
-            Err(error) => return TreeResponse::Invalid(Json(Error { message: error.to_string() })),
+            Err(error) => {
+                return TreeResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
         };
-        let project = match project_access(&self.store, &user, project_id, ProjectPermission::Viewer).await {
-            ProjectAccess::Allowed { project, .. } => project,
-            ProjectAccess::Forbidden => return TreeResponse::Forbidden(Json(forbidden())),
-            ProjectAccess::Missing => return TreeResponse::Missing(Json(missing_project())),
-            ProjectAccess::Failed(message) => return TreeResponse::Failed(Json(Error { message })),
-        };
+        let project =
+            match project_access(&self.store, &user, project_id, ProjectPermission::Viewer).await {
+                ProjectAccess::Allowed { project, .. } => project,
+                ProjectAccess::Forbidden => return TreeResponse::Forbidden(Json(forbidden())),
+                ProjectAccess::Missing => return TreeResponse::Missing(Json(missing_project())),
+                ProjectAccess::Failed(message) => {
+                    return TreeResponse::Failed(Json(Error { message }));
+                }
+            };
         let head = match self.store.default_branch_head(project_id).await {
             Ok(Some(head)) => head,
-            Ok(None) => return TreeResponse::Missing(Json(Error {
-                message: "run discovery first, so the default branch is known".to_owned(),
-            })),
-            Err(error) => return TreeResponse::Failed(Json(Error { message: error.to_string() })),
+            Ok(None) => {
+                return TreeResponse::Missing(Json(Error {
+                    message: "run discovery first, so the default branch is known".to_owned(),
+                }));
+            }
+            Err(error) => {
+                return TreeResponse::Failed(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
         };
         let mirror = match Mirror::open(&self.mirror_root, &project.remote).await {
             Ok(mirror) => mirror,
-            Err(error) => return TreeResponse::Failed(Json(Error { message: error.to_string() })),
+            Err(error) => {
+                return TreeResponse::Failed(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
         };
         let directory = path.0.unwrap_or_default();
         match mirror.entries_at(&head, &directory).await {
@@ -1050,7 +1280,9 @@ impl Api {
                 path: directory,
                 entries: entries.into_iter().map(entry_output).collect(),
             })),
-            Err(error) => TreeResponse::Failed(Json(Error { message: error.to_string() })),
+            Err(error) => TreeResponse::Failed(Json(Error {
+                message: error.to_string(),
+            })),
         }
     }
 
@@ -1064,30 +1296,53 @@ impl Api {
     ) -> IconCandidatesResponse {
         let project_id = match project_id.0.parse::<Id<Project>>() {
             Ok(project_id) => project_id,
-            Err(error) => return IconCandidatesResponse::Invalid(Json(Error { message: error.to_string() })),
+            Err(error) => {
+                return IconCandidatesResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
         };
-        let project = match project_access(&self.store, &user, project_id, ProjectPermission::Viewer).await {
-            ProjectAccess::Allowed { project, .. } => project,
-            ProjectAccess::Forbidden => return IconCandidatesResponse::Forbidden(Json(forbidden())),
-            ProjectAccess::Missing => return IconCandidatesResponse::Missing(Json(missing_project())),
-            ProjectAccess::Failed(message) => return IconCandidatesResponse::Failed(Json(Error { message })),
-        };
+        let project =
+            match project_access(&self.store, &user, project_id, ProjectPermission::Viewer).await {
+                ProjectAccess::Allowed { project, .. } => project,
+                ProjectAccess::Forbidden => {
+                    return IconCandidatesResponse::Forbidden(Json(forbidden()));
+                }
+                ProjectAccess::Missing => {
+                    return IconCandidatesResponse::Missing(Json(missing_project()));
+                }
+                ProjectAccess::Failed(message) => {
+                    return IconCandidatesResponse::Failed(Json(Error { message }));
+                }
+            };
         let head = match self.store.default_branch_head(project_id).await {
             Ok(Some(head)) => head,
-            Ok(None) => return IconCandidatesResponse::Missing(Json(Error {
-                message: "run discovery first, so the default branch is known".to_owned(),
-            })),
-            Err(error) => return IconCandidatesResponse::Failed(Json(Error { message: error.to_string() })),
+            Ok(None) => {
+                return IconCandidatesResponse::Missing(Json(Error {
+                    message: "run discovery first, so the default branch is known".to_owned(),
+                }));
+            }
+            Err(error) => {
+                return IconCandidatesResponse::Failed(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
         };
         let mirror = match Mirror::open(&self.mirror_root, &project.remote).await {
             Ok(mirror) => mirror,
-            Err(error) => return IconCandidatesResponse::Failed(Json(Error { message: error.to_string() })),
+            Err(error) => {
+                return IconCandidatesResponse::Failed(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
         };
         match crate::icon::suggest(&mirror, &head, &project.name).await {
             Ok(candidates) => IconCandidatesResponse::Found(Json(IconCandidatesOutput {
                 candidates: candidates.into_iter().map(candidate_output).collect(),
             })),
-            Err(error) => IconCandidatesResponse::Failed(Json(Error { message: error.to_string() })),
+            Err(error) => IconCandidatesResponse::Failed(Json(Error {
+                message: error.to_string(),
+            })),
         }
     }
 
@@ -1102,20 +1357,34 @@ impl Api {
     ) -> GetProjectResponse {
         let project_id = match project_id.0.parse::<Id<Project>>() {
             Ok(project_id) => project_id,
-            Err(error) => return GetProjectResponse::Invalid(Json(Error { message: error.to_string() })),
+            Err(error) => {
+                return GetProjectResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
         };
-        let project = match project_access(&self.store, &user, project_id, ProjectPermission::Owner).await {
+        let project = match project_access(&self.store, &user, project_id, ProjectPermission::Owner)
+            .await
+        {
             ProjectAccess::Allowed { project, .. } => project,
             ProjectAccess::Forbidden => return GetProjectResponse::Forbidden(Json(forbidden())),
             ProjectAccess::Missing => return GetProjectResponse::Missing(Json(missing_project())),
-            ProjectAccess::Failed(message) => return GetProjectResponse::Failed(Json(Error { message })),
+            ProjectAccess::Failed(message) => {
+                return GetProjectResponse::Failed(Json(Error { message }));
+            }
         };
         let icon = match icon_from_input(&input.0) {
             Ok(icon) => icon,
             Err(message) => return GetProjectResponse::Invalid(Json(Error { message })),
         };
-        if let Err(error) = self.store.describe_project(project_id, project.description.as_deref(), &icon).await {
-            return GetProjectResponse::Failed(Json(Error { message: error.to_string() }));
+        if let Err(error) = self
+            .store
+            .describe_project(project_id, project.description.as_deref(), &icon)
+            .await
+        {
+            return GetProjectResponse::Failed(Json(Error {
+                message: error.to_string(),
+            }));
         }
         project_response(&self.store, project_id, ProjectRole::Owner).await
     }
@@ -1131,32 +1400,58 @@ impl Api {
     ) -> GetProjectResponse {
         let project_id = match project_id.0.parse::<Id<Project>>() {
             Ok(project_id) => project_id,
-            Err(error) => return GetProjectResponse::Invalid(Json(Error { message: error.to_string() })),
+            Err(error) => {
+                return GetProjectResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
         };
-        let project = match project_access(&self.store, &user, project_id, ProjectPermission::Owner).await {
+        let project = match project_access(&self.store, &user, project_id, ProjectPermission::Owner)
+            .await
+        {
             ProjectAccess::Allowed { project, .. } => project,
             ProjectAccess::Forbidden => return GetProjectResponse::Forbidden(Json(forbidden())),
             ProjectAccess::Missing => return GetProjectResponse::Missing(Json(missing_project())),
-            ProjectAccess::Failed(message) => return GetProjectResponse::Failed(Json(Error { message })),
+            ProjectAccess::Failed(message) => {
+                return GetProjectResponse::Failed(Json(Error { message }));
+            }
         };
         let description = input.0.description.filter(|text| !text.trim().is_empty());
-        if let Err(error) = self.store.describe_project(project_id, description.as_deref(), &project.icon).await {
-            return GetProjectResponse::Failed(Json(Error { message: error.to_string() }));
+        if let Err(error) = self
+            .store
+            .describe_project(project_id, description.as_deref(), &project.icon)
+            .await
+        {
+            return GetProjectResponse::Failed(Json(Error {
+                message: error.to_string(),
+            }));
         }
         project_response(&self.store, project_id, ProjectRole::Owner).await
     }
 
     #[oai(path = "/projects/:project_id", method = "get")]
-    async fn project(&self, CurrentUser(user): CurrentUser, project_id: Path<String>) -> GetProjectResponse {
+    async fn project(
+        &self,
+        CurrentUser(user): CurrentUser,
+        project_id: Path<String>,
+    ) -> GetProjectResponse {
         let project_id = match project_id.0.parse::<Id<Project>>() {
             Ok(project_id) => project_id,
-            Err(error) => return GetProjectResponse::Invalid(Json(Error { message: error.to_string() })),
+            Err(error) => {
+                return GetProjectResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
         };
         match project_access(&self.store, &user, project_id, ProjectPermission::Viewer).await {
-            ProjectAccess::Allowed { project, role } => match project_output(&self.store, project, role).await {
-                Ok(project) => GetProjectResponse::Found(Json(project)),
-                Err(error) => GetProjectResponse::Failed(Json(Error { message: error.to_string() })),
-            },
+            ProjectAccess::Allowed { project, role } => {
+                match project_output(&self.store, project, role).await {
+                    Ok(project) => GetProjectResponse::Found(Json(project)),
+                    Err(error) => GetProjectResponse::Failed(Json(Error {
+                        message: error.to_string(),
+                    })),
+                }
+            }
             ProjectAccess::Forbidden => GetProjectResponse::Forbidden(Json(forbidden())),
             ProjectAccess::Missing => GetProjectResponse::Missing(Json(missing_project())),
             ProjectAccess::Failed(message) => GetProjectResponse::Failed(Json(Error { message })),
@@ -1171,19 +1466,31 @@ impl Api {
     ) -> ProjectMembersResponse {
         let project_id = match project_id.0.parse::<Id<Project>>() {
             Ok(project_id) => project_id,
-            Err(error) => return ProjectMembersResponse::Invalid(Json(Error { message: error.to_string() })),
+            Err(error) => {
+                return ProjectMembersResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
         };
         match project_access(&self.store, &user, project_id, ProjectPermission::Owner).await {
             ProjectAccess::Allowed { .. } => {}
-            ProjectAccess::Forbidden => return ProjectMembersResponse::Forbidden(Json(forbidden())),
-            ProjectAccess::Missing => return ProjectMembersResponse::Missing(Json(missing_project())),
-            ProjectAccess::Failed(message) => return ProjectMembersResponse::Failed(Json(Error { message })),
+            ProjectAccess::Forbidden => {
+                return ProjectMembersResponse::Forbidden(Json(forbidden()));
+            }
+            ProjectAccess::Missing => {
+                return ProjectMembersResponse::Missing(Json(missing_project()));
+            }
+            ProjectAccess::Failed(message) => {
+                return ProjectMembersResponse::Failed(Json(Error { message }));
+            }
         }
         match self.store.list_project_members(project_id).await {
             Ok(members) => ProjectMembersResponse::Found(Json(ProjectMembersOutput {
                 members: members.into_iter().map(project_member_output).collect(),
             })),
-            Err(error) => ProjectMembersResponse::Failed(Json(Error { message: error.to_string() })),
+            Err(error) => ProjectMembersResponse::Failed(Json(Error {
+                message: error.to_string(),
+            })),
         }
     }
 
@@ -1197,13 +1504,23 @@ impl Api {
     ) -> ProjectMembersResponse {
         let project_id = match project_id.0.parse::<Id<Project>>() {
             Ok(project_id) => project_id,
-            Err(error) => return ProjectMembersResponse::Invalid(Json(Error { message: error.to_string() })),
+            Err(error) => {
+                return ProjectMembersResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
         };
         match project_access(&self.store, &user, project_id, ProjectPermission::Owner).await {
             ProjectAccess::Allowed { .. } => {}
-            ProjectAccess::Forbidden => return ProjectMembersResponse::Forbidden(Json(forbidden())),
-            ProjectAccess::Missing => return ProjectMembersResponse::Missing(Json(missing_project())),
-            ProjectAccess::Failed(message) => return ProjectMembersResponse::Failed(Json(Error { message })),
+            ProjectAccess::Forbidden => {
+                return ProjectMembersResponse::Forbidden(Json(forbidden()));
+            }
+            ProjectAccess::Missing => {
+                return ProjectMembersResponse::Missing(Json(missing_project()));
+            }
+            ProjectAccess::Failed(message) => {
+                return ProjectMembersResponse::Failed(Json(Error { message }));
+            }
         }
         let user_id = match user_id.0.parse::<Id<User>>() {
             Ok(user_id) => user_id,
@@ -1217,22 +1534,36 @@ impl Api {
                 }));
             }
             Ok(None) => return ProjectMembersResponse::Missing(Json(missing_user())),
-            Err(error) => return ProjectMembersResponse::Failed(Json(Error { message: error.to_string() })),
+            Err(error) => {
+                return ProjectMembersResponse::Failed(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
         }
-        match self.store.set_project_member(project_id, user_id, input.0.role.into_role()).await {
-            Ok(ProjectMemberChange::Updated) => match self.store.list_project_members(project_id).await {
-                Ok(members) => ProjectMembersResponse::Found(Json(ProjectMembersOutput {
-                    members: members.into_iter().map(project_member_output).collect(),
-                })),
-                Err(error) => ProjectMembersResponse::Failed(Json(Error { message: error.to_string() })),
-            },
+        match self
+            .store
+            .set_project_member(project_id, user_id, input.0.role.into_role())
+            .await
+        {
+            Ok(ProjectMemberChange::Updated) => {
+                match self.store.list_project_members(project_id).await {
+                    Ok(members) => ProjectMembersResponse::Found(Json(ProjectMembersOutput {
+                        members: members.into_iter().map(project_member_output).collect(),
+                    })),
+                    Err(error) => ProjectMembersResponse::Failed(Json(Error {
+                        message: error.to_string(),
+                    })),
+                }
+            }
             Ok(ProjectMemberChange::FinalOwner) => ProjectMembersResponse::Invalid(Json(Error {
                 message: "a project must keep an owner".to_owned(),
             })),
             Ok(ProjectMemberChange::Missing | ProjectMemberChange::Removed) => {
                 ProjectMembersResponse::Missing(Json(missing_user()))
             }
-            Err(error) => ProjectMembersResponse::Failed(Json(Error { message: error.to_string() })),
+            Err(error) => ProjectMembersResponse::Failed(Json(Error {
+                message: error.to_string(),
+            })),
         }
     }
 
@@ -1245,33 +1576,51 @@ impl Api {
     ) -> ProjectMembersResponse {
         let project_id = match project_id.0.parse::<Id<Project>>() {
             Ok(project_id) => project_id,
-            Err(error) => return ProjectMembersResponse::Invalid(Json(Error { message: error.to_string() })),
+            Err(error) => {
+                return ProjectMembersResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
         };
         match project_access(&self.store, &user, project_id, ProjectPermission::Owner).await {
             ProjectAccess::Allowed { .. } => {}
-            ProjectAccess::Forbidden => return ProjectMembersResponse::Forbidden(Json(forbidden())),
-            ProjectAccess::Missing => return ProjectMembersResponse::Missing(Json(missing_project())),
-            ProjectAccess::Failed(message) => return ProjectMembersResponse::Failed(Json(Error { message })),
+            ProjectAccess::Forbidden => {
+                return ProjectMembersResponse::Forbidden(Json(forbidden()));
+            }
+            ProjectAccess::Missing => {
+                return ProjectMembersResponse::Missing(Json(missing_project()));
+            }
+            ProjectAccess::Failed(message) => {
+                return ProjectMembersResponse::Failed(Json(Error { message }));
+            }
         }
         let user_id = match user_id.0.parse::<Id<User>>() {
             Ok(user_id) => user_id,
             Err(_) => return ProjectMembersResponse::Missing(Json(missing_user())),
         };
         match self.store.remove_project_member(project_id, user_id).await {
-            Ok(ProjectMemberChange::Removed) => match self.store.list_project_members(project_id).await {
-                Ok(members) => ProjectMembersResponse::Found(Json(ProjectMembersOutput {
-                    members: members.into_iter().map(project_member_output).collect(),
-                })),
-                Err(error) => ProjectMembersResponse::Failed(Json(Error { message: error.to_string() })),
-            },
-            Ok(ProjectMemberChange::Missing) => ProjectMembersResponse::Missing(Json(missing_user())),
+            Ok(ProjectMemberChange::Removed) => {
+                match self.store.list_project_members(project_id).await {
+                    Ok(members) => ProjectMembersResponse::Found(Json(ProjectMembersOutput {
+                        members: members.into_iter().map(project_member_output).collect(),
+                    })),
+                    Err(error) => ProjectMembersResponse::Failed(Json(Error {
+                        message: error.to_string(),
+                    })),
+                }
+            }
+            Ok(ProjectMemberChange::Missing) => {
+                ProjectMembersResponse::Missing(Json(missing_user()))
+            }
             Ok(ProjectMemberChange::FinalOwner) => ProjectMembersResponse::Invalid(Json(Error {
                 message: "a project must keep an owner".to_owned(),
             })),
             Ok(ProjectMemberChange::Updated) => ProjectMembersResponse::Failed(Json(Error {
                 message: "project membership state was invalid".to_owned(),
             })),
-            Err(error) => ProjectMembersResponse::Failed(Json(Error { message: error.to_string() })),
+            Err(error) => ProjectMembersResponse::Failed(Json(Error {
+                message: error.to_string(),
+            })),
         }
     }
 
@@ -1283,19 +1632,29 @@ impl Api {
     ) -> ListAnalysesResponse {
         let project_id = match project_id.0.parse::<Id<Project>>() {
             Ok(project_id) => project_id,
-            Err(error) => return ListAnalysesResponse::Invalid(Json(Error { message: error.to_string() })),
+            Err(error) => {
+                return ListAnalysesResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
         };
         match project_access(&self.store, &user, project_id, ProjectPermission::Viewer).await {
             ProjectAccess::Allowed { .. } => {}
             ProjectAccess::Forbidden => return ListAnalysesResponse::Forbidden(Json(forbidden())),
-            ProjectAccess::Missing => return ListAnalysesResponse::Missing(Json(missing_project())),
-            ProjectAccess::Failed(message) => return ListAnalysesResponse::Failed(Json(Error { message })),
+            ProjectAccess::Missing => {
+                return ListAnalysesResponse::Missing(Json(missing_project()));
+            }
+            ProjectAccess::Failed(message) => {
+                return ListAnalysesResponse::Failed(Json(Error { message }));
+            }
         }
         match self.store.analyses_for_project(project_id).await {
             Ok(analyses) => ListAnalysesResponse::Found(Json(AnalysesOutput {
                 analyses: analyses.into_iter().map(analysis_output).collect(),
             })),
-            Err(error) => ListAnalysesResponse::Failed(Json(Error { message: error.to_string() })),
+            Err(error) => ListAnalysesResponse::Failed(Json(Error {
+                message: error.to_string(),
+            })),
         }
     }
 
@@ -1307,20 +1666,34 @@ impl Api {
     ) -> DiscoverProjectResponse {
         let project_id = match project_id.0.parse::<Id<Project>>() {
             Ok(project_id) => project_id,
-            Err(error) => return DiscoverProjectResponse::Invalid(Json(Error { message: error.to_string() })),
+            Err(error) => {
+                return DiscoverProjectResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
         };
         match project_access(&self.store, &user, project_id, ProjectPermission::Operator).await {
             ProjectAccess::Allowed { .. } => {}
-            ProjectAccess::Forbidden => return DiscoverProjectResponse::Forbidden(Json(forbidden())),
-            ProjectAccess::Missing => return DiscoverProjectResponse::Missing(Json(missing_project())),
-            ProjectAccess::Failed(message) => return DiscoverProjectResponse::Failed(Json(Error { message })),
+            ProjectAccess::Forbidden => {
+                return DiscoverProjectResponse::Forbidden(Json(forbidden()));
+            }
+            ProjectAccess::Missing => {
+                return DiscoverProjectResponse::Missing(Json(missing_project()));
+            }
+            ProjectAccess::Failed(message) => {
+                return DiscoverProjectResponse::Failed(Json(Error { message }));
+            }
         }
         let discovery = match discovery::run(&self.store, &self.mirror_root, project_id).await {
             Ok(discovery) => discovery,
             Err(discovery::DiscoveryError::ProjectNotFound) => {
                 return DiscoverProjectResponse::Missing(Json(missing_project()));
             }
-            Err(error) => return DiscoverProjectResponse::Failed(Json(Error { message: error.to_string() })),
+            Err(error) => {
+                return DiscoverProjectResponse::Failed(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
         };
         match discovery_output(&self.store, project_id, discovery).await {
             Ok(output) => DiscoverProjectResponse::Found(Json(output)),
@@ -1337,37 +1710,67 @@ impl Api {
     ) -> AnalyzeProjectResponse {
         let project_id = match project_id.0.parse::<Id<Project>>() {
             Ok(project_id) => project_id,
-            Err(error) => return AnalyzeProjectResponse::Invalid(Json(Error { message: error.to_string() })),
+            Err(error) => {
+                return AnalyzeProjectResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
         };
         match project_access(&self.store, &user, project_id, ProjectPermission::Operator).await {
             ProjectAccess::Allowed { .. } => {}
-            ProjectAccess::Forbidden => return AnalyzeProjectResponse::Forbidden(Json(forbidden())),
-            ProjectAccess::Missing => return AnalyzeProjectResponse::Missing(Json(missing_project())),
-            ProjectAccess::Failed(message) => return AnalyzeProjectResponse::Failed(Json(Error { message })),
+            ProjectAccess::Forbidden => {
+                return AnalyzeProjectResponse::Forbidden(Json(forbidden()));
+            }
+            ProjectAccess::Missing => {
+                return AnalyzeProjectResponse::Missing(Json(missing_project()));
+            }
+            ProjectAccess::Failed(message) => {
+                return AnalyzeProjectResponse::Failed(Json(Error { message }));
+            }
         }
         let base = match input.0.base_sha.as_deref().map(CommitSha::new).transpose() {
             Ok(base) => base,
-            Err(error) => return AnalyzeProjectResponse::Invalid(Json(Error { message: error.to_string() })),
+            Err(error) => {
+                return AnalyzeProjectResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
         };
         let head = match CommitSha::new(&input.0.head_sha) {
             Ok(head) => head,
-            Err(error) => return AnalyzeProjectResponse::Invalid(Json(Error { message: error.to_string() })),
+            Err(error) => {
+                return AnalyzeProjectResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
         };
         match runner::run(&self.store, &self.mirror_root, project_id, base, head).await {
             Ok(analysis) => match self.store.analyses_for_project(project_id).await {
-                Ok(analyses) => match analyses.into_iter().find(|stored| stored.snapshot.id == analysis.snapshot.id) {
+                Ok(analyses) => match analyses
+                    .into_iter()
+                    .find(|stored| stored.snapshot.id == analysis.snapshot.id)
+                {
                     Some(stored) => AnalyzeProjectResponse::Created(Json(analysis_output(stored))),
                     None => AnalyzeProjectResponse::Failed(Json(Error {
                         message: "analysis was not stored".to_owned(),
                     })),
                 },
-                Err(error) => AnalyzeProjectResponse::Failed(Json(Error { message: error.to_string() })),
+                Err(error) => AnalyzeProjectResponse::Failed(Json(Error {
+                    message: error.to_string(),
+                })),
             },
-            Err(runner::AnalysisError::ProjectNotFound) => AnalyzeProjectResponse::Missing(Json(missing_project())),
-            Err(runner::AnalysisError::RootCommit) => AnalyzeProjectResponse::Invalid(Json(Error {
-                message: "that commit has no parent, so give a base commit to compare against".to_owned(),
+            Err(runner::AnalysisError::ProjectNotFound) => {
+                AnalyzeProjectResponse::Missing(Json(missing_project()))
+            }
+            Err(runner::AnalysisError::RootCommit) => {
+                AnalyzeProjectResponse::Invalid(Json(Error {
+                    message: "that commit has no parent, so give a base commit to compare against"
+                        .to_owned(),
+                }))
+            }
+            Err(error) => AnalyzeProjectResponse::Failed(Json(Error {
+                message: error.to_string(),
             })),
-            Err(error) => AnalyzeProjectResponse::Failed(Json(Error { message: error.to_string() })),
         }
     }
 }
@@ -1451,6 +1854,13 @@ fn missing_user() -> Error {
     }
 }
 
+fn api_token_store_error(operation: &'static str, error: crate::store::StoreError) -> Error {
+    crate::auth::log_store_error(operation, &error);
+    Error {
+        message: "API token storage operation failed".to_owned(),
+    }
+}
+
 async fn project_response(
     store: &Store,
     project_id: Id<Project>,
@@ -1459,10 +1869,14 @@ async fn project_response(
     match store.project(project_id).await {
         Ok(Some(project)) => match project_output(store, project, role).await {
             Ok(project) => GetProjectResponse::Found(Json(project)),
-            Err(error) => GetProjectResponse::Failed(Json(Error { message: error.to_string() })),
+            Err(error) => GetProjectResponse::Failed(Json(Error {
+                message: error.to_string(),
+            })),
         },
         Ok(None) => GetProjectResponse::Missing(Json(missing_project())),
-        Err(error) => GetProjectResponse::Failed(Json(Error { message: error.to_string() })),
+        Err(error) => GetProjectResponse::Failed(Json(Error {
+            message: error.to_string(),
+        })),
     }
 }
 
@@ -1952,7 +2366,11 @@ async fn serve_blob(
     CurrentUser(user): CurrentUser,
     request: &poem::Request,
 ) -> poem::Response {
-    let not_found = || poem::Response::builder().status(StatusCode::NOT_FOUND).finish();
+    let not_found = || {
+        poem::Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .finish()
+    };
     let Ok(project_id) = project_id.parse::<Id<Project>>() else {
         return not_found();
     };
@@ -1962,22 +2380,42 @@ async fn serve_blob(
     if !is_image_path(path.as_str()) {
         return not_found();
     }
-    let project = match project_access(&state.store, &user, project_id, ProjectPermission::Viewer).await {
-        ProjectAccess::Allowed { project, .. } => project,
-        ProjectAccess::Forbidden => return poem::Response::builder().status(StatusCode::FORBIDDEN).finish(),
-        ProjectAccess::Missing => return not_found(),
-        ProjectAccess::Failed(_) => return poem::Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).finish(),
-    };
+    let project =
+        match project_access(&state.store, &user, project_id, ProjectPermission::Viewer).await {
+            ProjectAccess::Allowed { project, .. } => project,
+            ProjectAccess::Forbidden => {
+                return poem::Response::builder()
+                    .status(StatusCode::FORBIDDEN)
+                    .finish();
+            }
+            ProjectAccess::Missing => return not_found(),
+            ProjectAccess::Failed(_) => {
+                return poem::Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .finish();
+            }
+        };
     let head = match state.store.default_branch_head(project_id).await {
         Ok(Some(head)) => head,
         Ok(None) => return not_found(),
-        Err(_) => return poem::Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).finish(),
+        Err(_) => {
+            return poem::Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .finish();
+        }
     };
     let mirror = match Mirror::open(&state.mirror_root, &project.remote).await {
         Ok(mirror) => mirror,
-        Err(_) => return poem::Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).finish(),
+        Err(_) => {
+            return poem::Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .finish();
+        }
     };
-    match mirror.bytes_at(&head, &path, crate::icon::MAX_ICON_BYTES).await {
+    match mirror
+        .bytes_at(&head, &path, crate::icon::MAX_ICON_BYTES)
+        .await
+    {
         Ok(Some(bytes)) => {
             let content_type = icon_content_type(&path);
             if content_type == "image/svg+xml" && !crate::icon::svg_is_safe(&bytes) {
@@ -1987,7 +2425,9 @@ async fn serve_blob(
             }
         }
         Ok(None) => not_found(),
-        Err(_) => poem::Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).finish(),
+        Err(_) => poem::Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .finish(),
     }
 }
 
@@ -2003,16 +2443,29 @@ async fn serve_icon(
     CurrentUser(user): CurrentUser,
     request: &poem::Request,
 ) -> poem::Response {
-    let not_found = || poem::Response::builder().status(StatusCode::NOT_FOUND).finish();
+    let not_found = || {
+        poem::Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .finish()
+    };
     let Ok(project_id) = project_id.parse::<Id<Project>>() else {
         return not_found();
     };
-    let project = match project_access(&state.store, &user, project_id, ProjectPermission::Viewer).await {
-        ProjectAccess::Allowed { project, .. } => project,
-        ProjectAccess::Forbidden => return poem::Response::builder().status(StatusCode::FORBIDDEN).finish(),
-        ProjectAccess::Missing => return not_found(),
-        ProjectAccess::Failed(_) => return poem::Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).finish(),
-    };
+    let project =
+        match project_access(&state.store, &user, project_id, ProjectPermission::Viewer).await {
+            ProjectAccess::Allowed { project, .. } => project,
+            ProjectAccess::Forbidden => {
+                return poem::Response::builder()
+                    .status(StatusCode::FORBIDDEN)
+                    .finish();
+            }
+            ProjectAccess::Missing => return not_found(),
+            ProjectAccess::Failed(_) => {
+                return poem::Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .finish();
+            }
+        };
     let path = match scheme.as_str() {
         "light" => project.icon.light,
         "dark" => project.icon.dark,
@@ -2023,14 +2476,25 @@ async fn serve_icon(
     };
     let mirror = match Mirror::open(&state.mirror_root, &project.remote).await {
         Ok(mirror) => mirror,
-        Err(_) => return poem::Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).finish(),
+        Err(_) => {
+            return poem::Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .finish();
+        }
     };
     let head = match state.store.default_branch_head(project_id).await {
         Ok(Some(head)) => head,
         Ok(None) => return not_found(),
-        Err(_) => return poem::Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).finish(),
+        Err(_) => {
+            return poem::Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .finish();
+        }
     };
-    match mirror.bytes_at(&head, &path, crate::icon::MAX_ICON_BYTES).await {
+    match mirror
+        .bytes_at(&head, &path, crate::icon::MAX_ICON_BYTES)
+        .await
+    {
         Ok(Some(bytes)) => {
             let content_type = icon_content_type(&path);
             if content_type == "image/svg+xml" && !crate::icon::svg_is_safe(&bytes) {
@@ -2040,12 +2504,20 @@ async fn serve_icon(
             }
         }
         Ok(None) => not_found(),
-        Err(_) => poem::Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).finish(),
+        Err(_) => poem::Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .finish(),
     }
 }
 
 fn icon_content_type(path: &crate::vcs::RepoPath) -> &'static str {
-    match path.as_str().rsplit('.').next().map(str::to_ascii_lowercase).as_deref() {
+    match path
+        .as_str()
+        .rsplit('.')
+        .next()
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
         Some("svg") => "image/svg+xml",
         Some("png") => "image/png",
         Some("webp") => "image/webp",
@@ -2114,6 +2586,8 @@ pub fn routes(
         mirror_root: data_root.join("mirrors"),
     };
     let auth_store = Arc::clone(&store);
+    let mcp_store = Arc::clone(&store);
+    let mcp_auth_store = Arc::clone(&store);
     let service = OpenApiService::new(
         Api {
             store,
@@ -2124,7 +2598,6 @@ pub fn routes(
     )
     .server(MOUNT);
     let specification = service.spec_endpoint();
-    let documentation = service.swagger_ui();
 
     let api_routes = Route::new()
         .at("/avatars/:identity", poem::get(serve_avatar).data(avatars))
@@ -2137,11 +2610,17 @@ pub fn routes(
             poem::get(serve_blob).data(blobs),
         )
         .nest("/", service.with(Tracing));
-    let api_routes = Route::new().nest("/", api_routes.with(crate::auth::RequireSession::new(auth_store)));
+    let api_routes = Route::new().nest(
+        "/",
+        api_routes.with(crate::auth::RequireSession::new(auth_store)),
+    );
     let routes = Route::new()
         .nest(MOUNT, api_routes)
+        .at(
+            "/mcp",
+            crate::mcp::endpoint(mcp_store).with(crate::auth::RequireSession::new(mcp_auth_store)),
+        )
         .at("/openapi.json", specification)
-        .nest("/docs", documentation)
         .at("/*path", poem::get(crate::web::serve));
     match github_auth {
         Some(auth) => routes.nest("/auth", crate::auth::routes(auth)),
@@ -2162,6 +2641,38 @@ mod tests {
                 .expect("store opens"),
         );
         routes(store, PathBuf::from(".tmp/analysis/test"), None)
+    }
+
+    async fn authenticated_routes() -> (Route, Arc<Store>, User, String) {
+        let store = Arc::new(
+            Store::open("sqlite::memory:", 0)
+                .await
+                .expect("store opens"),
+        );
+        let user = store
+            .register_user("https://github.com", "owner", "Owner", true)
+            .await
+            .expect("registers")
+            .expect("allows owner");
+        let session = "test-session".to_owned();
+        store
+            .create_session(
+                user.id,
+                &blake3::hash(session.as_bytes()).to_hex().to_string(),
+                Timestamp::now() + std::time::Duration::from_secs(60),
+            )
+            .await
+            .expect("stores session");
+        (
+            routes(
+                Arc::clone(&store),
+                PathBuf::from(".tmp/analysis/test"),
+                None,
+            ),
+            store,
+            user,
+            session,
+        )
     }
 
     #[tokio::test]
@@ -2196,7 +2707,74 @@ mod tests {
             .assert_string(TITLE);
     }
 
+    #[tokio::test]
+    async fn api_tokens_are_issued_once_and_list_only_metadata() {
+        let (routes, _, _, session) = authenticated_routes().await;
+        let client = TestClient::new(routes);
+        let response = client
+            .post("/api/tokens")
+            .header("cookie", format!("__Host-error-menu-session={session}"))
+            .body_json(&serde_json::json!({"name": "deploy", "expires_at": null}))
+            .send()
+            .await;
+        response.assert_status(StatusCode::CREATED);
+        let created = response.json().await;
+        let created = created.value().object();
+        created.get("name").assert_string("deploy");
+        let token = created.get("token").string();
+        assert!(token.starts_with("em_pat_"));
+        assert!(created.get_opt("created_at").is_some());
+        assert!(created.get_opt("expires_at").is_none());
 
+        let response = client
+            .get("/api/tokens")
+            .header("cookie", format!("__Host-error-menu-session={session}"))
+            .send()
+            .await;
+        response.assert_status_is_ok();
+        let listed = response.json().await;
+        let tokens = listed.value().object().get("tokens").object_array();
+        assert_eq!(tokens.len(), 1);
+        tokens[0].get("name").assert_string("deploy");
+        assert!(tokens[0].get_opt("token").is_none());
+        assert!(tokens[0].get_opt("token_hash").is_none());
+    }
+
+    #[tokio::test]
+    async fn api_tokens_can_only_be_revoked_by_their_owner() {
+        let (routes, store, owner, session) = authenticated_routes().await;
+        let other = store
+            .register_user("https://github.com", "other", "Other", true)
+            .await
+            .expect("registers")
+            .expect("allows other user");
+        let token = "em_pat_other";
+        let token_hash = blake3::hash(token.as_bytes()).to_hex().to_string();
+        store
+            .create_api_token(other.id, &token_hash, "other-token", None)
+            .await
+            .expect("stores other token");
+        let client = TestClient::new(routes);
+        client
+            .delete("/api/tokens/other-token")
+            .header("cookie", format!("__Host-error-menu-session={session}"))
+            .send()
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+        assert!(
+            store
+                .user_for_api_token(&token_hash, Timestamp::now())
+                .await
+                .expect("reads token")
+                .is_some()
+        );
+        assert!(
+            !store
+                .revoke_api_token(owner.id, "other-token")
+                .await
+                .expect("keeps other token")
+        );
+    }
     fn run_record(status: RunStatus, severities: &[Severity]) -> crate::store::AnalysisRunRecord {
         let run_id = Id::from_raw(1);
 

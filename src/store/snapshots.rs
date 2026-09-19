@@ -18,28 +18,33 @@ impl Store {
         let (kind_text, key) = encode_subject_kind(&kind);
         let id: Id<Subject> = self.ids.next();
 
-        sqlx::query(
-            "INSERT OR IGNORE INTO subjects (id, project_id, kind, subject_key) \
-             VALUES (?, ?, ?, ?)",
+        let row = sqlx::query(
+            "INSERT INTO subjects (id, project_id, kind, subject_key) VALUES (?, ?, ?, ?) \
+             ON CONFLICT(project_id, kind, subject_key) DO NOTHING RETURNING id",
         )
         .bind(id.raw())
         .bind(project_id.raw())
         .bind(kind_text)
         .bind(&key)
-        .execute(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
-
-        let row = sqlx::query(
-            "SELECT id FROM subjects WHERE project_id = ? AND kind = ? AND subject_key = ?",
-        )
-        .bind(project_id.raw())
-        .bind(kind_text)
-        .bind(&key)
-        .fetch_one(&self.pool)
-        .await?;
+        let id = match row {
+            Some(row) => Id::from_raw(row.try_get("id")?),
+            None => {
+                let row = sqlx::query(
+                    "SELECT id FROM subjects WHERE project_id = ? AND kind = ? AND subject_key = ?",
+                )
+                .bind(project_id.raw())
+                .bind(kind_text)
+                .bind(&key)
+                .fetch_one(&self.pool)
+                .await?;
+                Id::from_raw(row.try_get("id")?)
+            }
+        };
 
         Ok(Subject {
-            id: Id::from_raw(row.try_get("id")?),
+            id,
             project_id,
             kind,
         })

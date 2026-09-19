@@ -23,7 +23,7 @@ const ATTEMPT_SECONDS: u64 = 600;
 const SESSION_COOKIE: &str = "__Host-error-menu-session";
 const STATE_COOKIE: &str = "__Host-error-menu-oauth-state";
 
-fn log_store_error(operation: &'static str, error: &StoreError) {
+pub(crate) fn log_store_error(operation: &'static str, error: &StoreError) {
     match error.database_code() {
         Some(database_code) => tracing::error!(
             operation,
@@ -56,6 +56,20 @@ fn cookie_value(request: &Request, name: &str) -> Option<String> {
         })
 }
 
+fn bearer_token(request: &Request) -> Result<Option<String>, ()> {
+    let Some(value) = request.headers().get("authorization") else {
+        return Ok(None);
+    };
+    let value = value.to_str().map_err(|_| ())?;
+    let mut parts = value.split_ascii_whitespace();
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(scheme), Some(token), None) if scheme.eq_ignore_ascii_case("bearer") => {
+            Ok(Some(token.to_owned()))
+        }
+        _ => Err(()),
+    }
+}
+
 fn clear_cookie(mut response: Response, name: &str) -> Response {
     let mut cookie = Cookie::named(name);
     cookie.set_path("/");
@@ -81,6 +95,19 @@ fn unauthenticated() -> Response {
         .body(r#"{"message":"authentication is required"}"#)
 }
 
+fn bearer_write_forbidden() -> Response {
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .content_type("application/json; charset=utf-8")
+        .body(r#"{"message":"bearer tokens are read-only"}"#)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CredentialKind {
+    Session,
+    Bearer,
+}
+
 #[derive(Clone, Debug)]
 pub struct CurrentUser(pub User);
 
@@ -89,6 +116,36 @@ impl<'a> FromRequest<'a> for CurrentUser {
         request.extensions().get::<Self>().cloned().ok_or_else(|| {
             Error::from_string("missing authenticated user", StatusCode::UNAUTHORIZED)
         })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CurrentCredential(pub CredentialKind);
+
+impl<'a> FromRequest<'a> for CurrentCredential {
+    async fn from_request(request: &'a Request, _: &mut RequestBody) -> poem::Result<Self> {
+        request.extensions().get::<Self>().cloned().ok_or_else(|| {
+            Error::from_string("missing authenticated credential", StatusCode::UNAUTHORIZED)
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SessionUser(pub User);
+
+impl<'a> FromRequest<'a> for SessionUser {
+    async fn from_request(request: &'a Request, _: &mut RequestBody) -> poem::Result<Self> {
+        let user = request.extensions().get::<CurrentUser>();
+        let credential = request.extensions().get::<CurrentCredential>();
+        match (user, credential) {
+            (Some(user), Some(credential)) if credential.0 == CredentialKind::Session => {
+                Ok(Self(user.0.clone()))
+            }
+            _ => Err(Error::from_string(
+                "missing session user",
+                StatusCode::FORBIDDEN,
+            )),
+        }
     }
 }
 
@@ -133,26 +190,59 @@ where
         if matches!(request.uri().path(), "/health" | "/api/health") {
             return Ok(self.endpoint.call(request).await?.into_response());
         }
-        let Some(token) = cookie_value(&request, SESSION_COOKIE) else {
-            return Ok(unauthenticated());
+        let bearer_hash = match bearer_token(&request) {
+            Ok(Some(token)) => {
+                if !matches!(
+                    request.method(),
+                    &poem::http::Method::GET | &poem::http::Method::HEAD
+                ) && !(request.method() == poem::http::Method::POST
+                    && request.uri().path() == "/mcp")
+                {
+                    return Ok(bearer_write_forbidden());
+                }
+                Some(blake3::hash(token.as_bytes()).to_hex().to_string())
+            }
+            Ok(None) => None,
+            Err(()) => return Ok(unauthenticated()),
         };
-        let user = match self
-            .store
-            .user_for_session(
-                &blake3::hash(token.as_bytes()).to_hex().to_string(),
-                Timestamp::now(),
-            )
-            .await
-        {
-            Ok(user) => user,
-            Err(error) => {
-                log_store_error("lookup_session", &error);
-                None
+        let authenticated = match bearer_hash {
+            Some(token_hash) => match self
+                .store
+                .user_for_api_token(&token_hash, Timestamp::now())
+                .await
+            {
+                Ok(user) => user.map(|user| (user, CredentialKind::Bearer)),
+                Err(error) => {
+                    log_store_error("lookup_api_token", &error);
+                    None
+                }
+            },
+            None => {
+                let Some(token) = cookie_value(&request, SESSION_COOKIE) else {
+                    return Ok(unauthenticated());
+                };
+                match self
+                    .store
+                    .user_for_session(
+                        &blake3::hash(token.as_bytes()).to_hex().to_string(),
+                        Timestamp::now(),
+                    )
+                    .await
+                {
+                    Ok(user) => user.map(|user| (user, CredentialKind::Session)),
+                    Err(error) => {
+                        log_store_error("lookup_session", &error);
+                        None
+                    }
+                }
             }
         };
-        let Some(user) = user else {
+        let Some((user, credential)) = authenticated else {
             return Ok(unauthenticated());
         };
+        request
+            .extensions_mut()
+            .insert(CurrentCredential(credential));
         request.extensions_mut().insert(CurrentUser(user));
         Ok(self.endpoint.call(request).await?.into_response())
     }
@@ -195,7 +285,25 @@ struct GithubUser {
 }
 
 impl GithubAuth {
+    #[cfg(debug_assertions)]
+    fn development(store: Arc<Store>) -> Result<Arc<Self>, GithubAuthConfigError> {
+        Ok(Arc::new(Self {
+            store,
+            client_id: "development".to_owned(),
+            client_secret: "development".to_owned(),
+            callback_url: "https://development.invalid/auth/github/callback".to_owned(),
+            allow_registration: true,
+            client: reqwest::Client::new(),
+        }))
+    }
     pub fn from_environment(store: Arc<Store>) -> Result<Arc<Self>, GithubAuthConfigError> {
+        #[cfg(debug_assertions)]
+        if matches!(
+            std::env::var("ERROR_MENU_DEV_LOGIN").as_deref(),
+            Ok("1" | "true" | "TRUE")
+        ) {
+            return Self::development(store);
+        }
         let client_id = std::env::var("GITHUB_CLIENT_ID")
             .map_err(|_| GithubAuthConfigError::Missing("GITHUB_CLIENT_ID"))?;
         let client_secret = std::env::var("GITHUB_CLIENT_SECRET")
@@ -232,19 +340,19 @@ impl GithubAuth {
             client,
         }))
     }
+}
 
-    fn random_token() -> String {
-        rng()
-            .sample_iter(Alphanumeric)
-            .take(64)
-            .map(char::from)
-            .collect()
-    }
+pub(crate) fn random_token() -> String {
+    rng()
+        .sample_iter(Alphanumeric)
+        .take(64)
+        .map(char::from)
+        .collect()
 }
 
 #[poem::handler]
 async fn login(Data(auth): Data<&Arc<GithubAuth>>) -> Response {
-    let state = GithubAuth::random_token();
+    let state = random_token();
     let expires_at = Timestamp::now() + std::time::Duration::from_secs(ATTEMPT_SECONDS);
     if let Err(error) = auth
         .store
@@ -393,7 +501,7 @@ async fn callback(
     }) else {
         return clear_state_cookie(Response::builder().status(StatusCode::FORBIDDEN).finish());
     };
-    let session = GithubAuth::random_token();
+    let session = random_token();
     let expires_at = Timestamp::now() + std::time::Duration::from_secs(SESSION_SECONDS);
     if let Err(error) = auth
         .store
@@ -451,6 +559,11 @@ mod tests {
     #[poem::handler]
     async fn protected(CurrentUser(user): CurrentUser) -> String {
         user.display_name
+    }
+
+    #[poem::handler]
+    async fn protected_write(_: CurrentUser) -> StatusCode {
+        StatusCode::NO_CONTENT
     }
 
     fn github_auth(store: Arc<Store>) -> Arc<GithubAuth> {
@@ -530,6 +643,75 @@ mod tests {
             .assert_text("guest")
             .await;
     }
+
+    #[tokio::test]
+    async fn bearer_tokens_read_but_cannot_write_and_stop_after_expiry_or_revocation() {
+        let store = Arc::new(Store::open("sqlite::memory:", 0).await.expect("opens"));
+        let user = store
+            .register_user(GITHUB_ISSUER, "1", "luc", true)
+            .await
+            .expect("registers")
+            .expect("allows first user");
+        let token = "em_pat_live";
+        store
+            .create_api_token(
+                user.id,
+                &blake3::hash(token.as_bytes()).to_hex().to_string(),
+                "live",
+                None,
+            )
+            .await
+            .expect("stores token");
+        let read_client = TestClient::new(protected.with(RequireSession::new(Arc::clone(&store))));
+        read_client
+            .get("/")
+            .header("authorization", format!("Bearer {token}"))
+            .send()
+            .await
+            .assert_text("luc")
+            .await;
+        let write_client =
+            TestClient::new(protected_write.with(RequireSession::new(Arc::clone(&store))));
+        write_client
+            .post("/mcp")
+            .header("authorization", format!("Bearer {token}"))
+            .send()
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        write_client
+            .post("/")
+            .header("authorization", format!("Bearer {token}"))
+            .send()
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+        store
+            .revoke_api_token(user.id, "live")
+            .await
+            .expect("revokes token");
+        read_client
+            .get("/")
+            .header("authorization", format!("Bearer {token}"))
+            .send()
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+
+        let expired = "em_pat_expired";
+        store
+            .create_api_token(
+                user.id,
+                &blake3::hash(expired.as_bytes()).to_hex().to_string(),
+                "expired",
+                Some(Timestamp::UNIX_EPOCH),
+            )
+            .await
+            .expect("stores expired token");
+        read_client
+            .get("/")
+            .header("authorization", format!("Bearer {expired}"))
+            .send()
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+    }
     #[tokio::test]
     async fn logout_clears_the_cookie_and_revokes_the_session() {
         let store = Arc::new(Store::open("sqlite::memory:", 0).await.expect("opens"));
@@ -567,12 +749,63 @@ mod tests {
     }
 }
 
+#[cfg(debug_assertions)]
+#[poem::handler]
+async fn development_login(Data(auth): Data<&Arc<GithubAuth>>) -> Response {
+    if !matches!(
+        std::env::var("ERROR_MENU_DEV_LOGIN").as_deref(),
+        Ok("1" | "true" | "TRUE")
+    ) {
+        return Response::builder().status(StatusCode::NOT_FOUND).finish();
+    }
+    let user = match auth
+        .store
+        .register_user("urn:error-menu:development", "developer", "Developer", true)
+        .await
+    {
+        Ok(Some(user)) => user,
+        _ => {
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .finish();
+        }
+    };
+    let session = random_token();
+    if auth
+        .store
+        .create_session(
+            user.id,
+            &blake3::hash(session.as_bytes()).to_hex().to_string(),
+            Timestamp::now() + std::time::Duration::from_secs(SESSION_SECONDS),
+        )
+        .await
+        .is_err()
+    {
+        return Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .finish();
+    }
+    let mut cookie = Cookie::new_with_str(SESSION_COOKIE, session);
+    cookie.set_http_only(true);
+    cookie.set_secure(true);
+    cookie.set_same_site(SameSite::Lax);
+    cookie.set_path("/");
+    Response::builder()
+        .status(StatusCode::FOUND)
+        .header("location", "/")
+        .header("set-cookie", cookie.to_string())
+        .finish()
+}
+
 pub fn routes(auth: Arc<GithubAuth>) -> Route {
-    Route::new()
+    let routes = Route::new()
         .at("/github/login", poem::get(login).data(Arc::clone(&auth)))
         .at(
             "/github/callback",
             poem::get(callback).data(Arc::clone(&auth)),
         )
-        .at("/logout", poem::post(logout).data(auth))
+        .at("/logout", poem::post(logout).data(Arc::clone(&auth)));
+    #[cfg(debug_assertions)]
+    let routes = routes.at("/dev/login", poem::get(development_login).data(auth));
+    routes
 }

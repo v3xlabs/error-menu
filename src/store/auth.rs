@@ -15,6 +15,13 @@ pub enum UserRoleChange {
     FinalAdmin,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiToken {
+    pub name: String,
+    pub created_at: Timestamp,
+    pub expires_at: Option<Timestamp>,
+}
+
 impl Store {
     pub async fn register_user(
         &self,
@@ -161,6 +168,12 @@ impl Store {
             .bind(now_millis)
             .execute(&self.pool)
             .await?;
+        sqlx::query(
+            "DELETE FROM api_tokens WHERE expires_at_millis IS NOT NULL AND expires_at_millis <= ?",
+        )
+        .bind(now_millis)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -246,6 +259,83 @@ impl Store {
             .await?;
         Ok(result.rows_affected() != 0)
     }
+
+    pub async fn create_api_token(
+        &self,
+        user_id: Id<User>,
+        token_hash: &str,
+        name: &str,
+        expires_at: Option<Timestamp>,
+    ) -> Result<ApiToken, StoreError> {
+        let created_at = Timestamp::now();
+        self.cleanup_expired_auth_records(created_at.as_millisecond())
+            .await?;
+        sqlx::query(
+            "INSERT INTO api_tokens (token_hash, user_id, name, created_at_millis, expires_at_millis) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(token_hash)
+        .bind(user_id.raw())
+        .bind(name)
+        .bind(created_at.as_millisecond())
+        .bind(expires_at.map(|expires_at| expires_at.as_millisecond()))
+        .execute(&self.pool)
+        .await?;
+        Ok(ApiToken {
+            name: name.to_owned(),
+            created_at,
+            expires_at,
+        })
+    }
+
+    pub async fn list_api_tokens(
+        &self,
+        user_id: Id<User>,
+        now: Timestamp,
+    ) -> Result<Vec<ApiToken>, StoreError> {
+        self.cleanup_expired_auth_records(now.as_millisecond())
+            .await?;
+        let rows = sqlx::query(
+            "SELECT name, created_at_millis, expires_at_millis FROM api_tokens \
+             WHERE user_id = ? ORDER BY created_at_millis DESC",
+        )
+        .bind(user_id.raw())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(decode_api_token).collect()
+    }
+
+    pub async fn user_for_api_token(
+        &self,
+        token_hash: &str,
+        now: Timestamp,
+    ) -> Result<Option<User>, StoreError> {
+        self.cleanup_expired_auth_records(now.as_millisecond())
+            .await?;
+        let row = sqlx::query(
+            "SELECT u.id, u.oidc_issuer, u.oidc_subject, u.display_name, u.access_role AS role, u.created_at, u.last_signed_in_at \
+             FROM api_tokens t JOIN users u ON u.id = t.user_id \
+             WHERE t.token_hash = ? AND (t.expires_at_millis IS NULL OR t.expires_at_millis > ?)",
+        )
+        .bind(token_hash)
+        .bind(now.as_millisecond())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(decode_user).transpose()
+    }
+
+    pub async fn revoke_api_token(
+        &self,
+        user_id: Id<User>,
+        name: &str,
+    ) -> Result<bool, StoreError> {
+        let result = sqlx::query("DELETE FROM api_tokens WHERE user_id = ? AND name = ?")
+            .bind(user_id.raw())
+            .bind(name)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() != 0)
+    }
 }
 
 fn decode_user(row: sqlx::sqlite::SqliteRow) -> Result<User, StoreError> {
@@ -263,6 +353,27 @@ fn decode_user(row: sqlx::sqlite::SqliteRow) -> Result<User, StoreError> {
         role,
         created_at: decode_timestamp(row.try_get("created_at")?)?,
         last_signed_in_at: decode_timestamp(row.try_get("last_signed_in_at")?)?,
+    })
+}
+
+fn decode_api_token(row: sqlx::sqlite::SqliteRow) -> Result<ApiToken, StoreError> {
+    let created_at_millis: i64 = row.try_get("created_at_millis")?;
+    let expires_at_millis: Option<i64> = row.try_get("expires_at_millis")?;
+    Ok(ApiToken {
+        name: row.try_get("name")?,
+        created_at: Timestamp::from_millisecond(created_at_millis).map_err(|_| {
+            StoreError::Unreadable {
+                field: "api_token.created_at_millis",
+                value: created_at_millis.to_string(),
+            }
+        })?,
+        expires_at: expires_at_millis
+            .map(Timestamp::from_millisecond)
+            .transpose()
+            .map_err(|_| StoreError::Unreadable {
+                field: "api_token.expires_at_millis",
+                value: expires_at_millis.unwrap_or_default().to_string(),
+            })?,
     })
 }
 

@@ -38,6 +38,208 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["ApiTokensOutput"];
+                    };
+                };
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["CreatedApiTokenOutput"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["CreateApiToken"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["ApiTokensOutput"];
+                    };
+                };
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["CreatedApiTokenOutput"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tokens/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    name: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/user": {
         parameters: {
             query?: never;
@@ -1561,6 +1763,16 @@ export interface components {
             findings: components["schemas"]["FindingOutput"][];
             signals: components["schemas"]["SignalOutput"][];
         };
+        /** ApiTokenOutput */
+        ApiTokenOutput: {
+            name: string;
+            created_at: string;
+            expires_at?: string;
+        };
+        /** ApiTokensOutput */
+        ApiTokensOutput: {
+            tokens: components["schemas"]["ApiTokenOutput"][];
+        };
         /** @enum {string} */
         ChangeStateOutput: "open" | "closed" | "merged";
         /** CheckRunOutput */
@@ -1571,6 +1783,11 @@ export interface components {
             url?: string;
             log_excerpt_ref?: string;
         };
+        /** CreateApiToken */
+        CreateApiToken: {
+            name: string;
+            expires_at?: string;
+        };
         /** CreateProject */
         CreateProject: {
             name: string;
@@ -1578,6 +1795,13 @@ export interface components {
             uses_default_analyzers: boolean;
             analyzers: components["schemas"]["Analyzer"][];
             forge?: components["schemas"]["Forge"];
+        };
+        /** CreatedApiTokenOutput */
+        CreatedApiTokenOutput: {
+            name: string;
+            token: string;
+            created_at: string;
+            expires_at?: string;
         };
         /** DescribeProject */
         DescribeProject: {
@@ -1671,11 +1895,7 @@ export interface components {
          * @enum {string}
          */
         MovementOutput: "added" | "removed" | "upgraded" | "downgraded" | "changed";
-        /**
-         * PackageOutput
-         * @description The package a finding is about, when the finding is about a package rather than a
-         *     line of a file.
-         */
+        /** PackageOutput */
         PackageOutput: {
             ecosystem: components["schemas"]["EcosystemOutput"];
             name: string;

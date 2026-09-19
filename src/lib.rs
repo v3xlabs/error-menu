@@ -6,6 +6,7 @@ pub mod finding;
 pub mod forge;
 pub mod http;
 pub mod icon;
+pub mod mcp;
 pub mod id;
 pub mod person;
 pub mod queue;

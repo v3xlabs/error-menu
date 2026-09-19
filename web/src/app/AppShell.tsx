@@ -2,6 +2,7 @@ import type { JSX } from "@solidjs/web";
 import { createSignal, Match, Show, Switch } from "solid-js";
 
 import { logout } from "../api/users";
+import { ApiTokensDialog } from "../components/ApiTokensDialog";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { UserAdminDialog } from "../components/UserAdminDialog";
 import { AccountProvider, useAccount } from "./account";
@@ -84,6 +85,7 @@ const AccountControls = () => {
             <Show when={user().role === "admin"}>
               <UserAdminDialog onChanged={() => void account.reload()} />
             </Show>
+            <ApiTokensDialog />
             <SignOutControl />
           </div>
         )}

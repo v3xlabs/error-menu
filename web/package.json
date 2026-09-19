@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@kobalte/core": "2.0.0-alpha.2",
+    "@scalar/api-reference": "1.69.1",
     "@solidjs/router": "2.0.0-next.18",
     "@solidjs/web": "2.0.0-rc.3",
     "@tanstack/virtual-core": "^3.17.11",
