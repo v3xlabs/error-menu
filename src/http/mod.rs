@@ -830,9 +830,9 @@ impl Api {
     ) -> ApiTokensResponse {
         let input = input.0;
         let name = input.name.trim();
-        if name.is_empty() || name.len() > 128 {
+        if name.is_empty() || name.len() > 128 || matches!(name, "." | "..") {
             return ApiTokensResponse::Invalid(Json(Error {
-                message: "token name must contain 1 to 128 bytes".to_owned(),
+                message: "token name must contain 1 to 128 bytes and cannot be . or ..".to_owned(),
             }));
         }
         let now = Timestamp::now();
@@ -2738,6 +2738,22 @@ mod tests {
         tokens[0].get("name").assert_string("deploy");
         assert!(tokens[0].get_opt("token").is_none());
         assert!(tokens[0].get_opt("token_hash").is_none());
+    }
+
+    #[tokio::test]
+    async fn api_token_dot_segment_names_are_rejected() {
+        let (routes, _, _, session) = authenticated_routes().await;
+        let client = TestClient::new(routes);
+
+        for name in [".", ".."] {
+            client
+                .post("/api/tokens")
+                .header("cookie", format!("__Host-error-menu-session={session}"))
+                .body_json(&serde_json::json!({"name": name, "expires_at": null}))
+                .send()
+                .await
+                .assert_status(StatusCode::BAD_REQUEST);
+        }
     }
 
     #[tokio::test]
