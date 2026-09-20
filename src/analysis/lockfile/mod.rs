@@ -5,11 +5,9 @@ mod pnpm;
 
 use std::collections::BTreeMap;
 
-use crate::confidence::Confidence;
-use crate::finding::fingerprint::{Components, Fingerprint};
-use crate::finding::{Attribution, Ecosystem, Location, NewFinding, Severity, VersionMovement};
+use crate::analysis::finding::fingerprint::{Components, Fingerprint};
+use crate::prelude::*;
 use crate::vcs::mirror::{FileChange, Mirror, MirrorError};
-use crate::vcs::{CommitSha, RepoPath};
 
 pub const ANALYZER: &str = "lockfile-delta";
 

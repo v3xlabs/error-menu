@@ -1,17 +1,17 @@
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::sync::{Arc, LazyLock, Weak};
+
+use sqlx::Row;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::analysis::{
-    Run, RunStatus, ci_checks, hygiene, links, lockfile, manifest, repository_controls, secret,
-    workflow,
+    NewRun, ci_checks, hygiene, links, lockfile, manifest, repository_controls, secret, workflow,
 };
+use crate::app::AppState;
 use crate::forge::ForgeMetadata;
 use crate::forge::reader::{ForgeReadError, ForgeReader};
-use crate::id::Id;
-use crate::store::{RunRecord, Store, StoreError};
-use crate::vcs::CommitSha;
+use crate::prelude::*;
 use crate::vcs::mirror::{ChangedFile, FileChange, Mirror, MirrorError};
-use crate::watch::{Project, Snapshot, SubjectKind};
 
 const MAX_SECRET_SCAN_BYTES: u64 = 32 * 1024 * 1024;
 pub const DEFAULT_ANALYZERS: [&str; 8] = [
@@ -28,15 +28,16 @@ pub const DEFAULT_ANALYZERS: [&str; 8] = [
 pub fn is_known_analyzer(analyzer: &str) -> bool {
     DEFAULT_ANALYZERS.contains(&analyzer)
 }
-pub fn effective_analyzers(uses_default_analyzers: bool, custom_analyzers: Vec<String>) -> Vec<String> {
+pub fn effective_analyzers(
+    uses_default_analyzers: bool,
+    custom_analyzers: Vec<String>,
+) -> Vec<String> {
     if uses_default_analyzers {
         return DEFAULT_ANALYZERS.into_iter().map(str::to_owned).collect();
     }
 
     custom_analyzers
 }
-
-
 
 #[derive(Debug, thiserror::Error)]
 pub enum AnalysisError {
@@ -46,8 +47,8 @@ pub enum AnalysisError {
     RootCommit,
     #[error("repository: {0}")]
     Repository(#[from] MirrorError),
-    #[error("store: {0}")]
-    Store(#[from] StoreError),
+    #[error("database: {0}")]
+    Database(#[from] DatabaseError),
 }
 
 pub struct Analysis {
@@ -61,6 +62,44 @@ pub struct AnalyzerRun {
     pub signal_count: u64,
 }
 
+impl Analysis {
+    pub async fn for_snapshot(
+        database: &Database,
+        snapshot: Snapshot,
+    ) -> Result<Analysis, DatabaseError> {
+        let rows = sqlx::query(
+            "SELECT r.id, r.snapshot_id, r.analyzer, r.status, r.status_detail, r.compared_against, \
+                    r.started_at, r.finished_at, \
+                    (SELECT COUNT(*) FROM findings f WHERE f.run_id = r.id) AS finding_count, \
+                    (SELECT COUNT(*) FROM signals s WHERE s.run_id = r.id) AS signal_count \
+             FROM runs r WHERE r.snapshot_id = \
+                 (SELECT COALESCE(analysis_snapshot_id, id) FROM snapshots WHERE id = ?) \
+             ORDER BY r.id",
+        )
+        .bind(snapshot.id.raw())
+        .fetch_all(&database.pool)
+        .await?;
+        let analyzers = rows
+            .into_iter()
+            .map(|row| {
+                let snapshot_id = Id::from_raw(row.try_get("snapshot_id")?);
+                let finding_count = row.try_get::<i64, _>("finding_count")? as u64;
+                let signal_count = row.try_get::<i64, _>("signal_count")? as u64;
+                Ok(AnalyzerRun {
+                    run: Run::decode_row(&row, snapshot_id)?,
+                    finding_count,
+                    signal_count,
+                })
+            })
+            .collect::<Result<Vec<_>, DatabaseError>>()?;
+
+        Ok(Analysis {
+            snapshot,
+            analyzers,
+        })
+    }
+}
+
 pub struct Target {
     pub subject: SubjectKind,
     pub base: CommitSha,
@@ -68,20 +107,37 @@ pub struct Target {
     pub forge: ForgeMetadata,
 }
 
+pub async fn project_lock(project_id: Id<Project>) -> OwnedMutexGuard<()> {
+    static LOCKS: LazyLock<Mutex<BTreeMap<i64, Weak<Mutex<()>>>>> =
+        LazyLock::new(|| Mutex::new(BTreeMap::new()));
+    let lock = {
+        let mut locks = LOCKS.lock().await;
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        match locks.get(&project_id.raw()).and_then(Weak::upgrade) {
+            Some(lock) => lock,
+            None => {
+                let lock = Arc::new(Mutex::new(()));
+                locks.insert(project_id.raw(), Arc::downgrade(&lock));
+                lock
+            }
+        }
+    };
+    lock.lock_owned().await
+}
+
 /// Analyses one commit range. Without a base, the comparison is against the commit's own
 /// first parent, so a reader who has one commit in hand does not have to find its parent.
 pub async fn run(
-    store: &Store,
-    mirror_root: &Path,
+    state: &AppState,
     project_id: Id<Project>,
     base: Option<CommitSha>,
     head: CommitSha,
 ) -> Result<Analysis, AnalysisError> {
-    let project = store
-        .project(project_id)
+    let _project_lock = project_lock(project_id).await;
+    let project = Project::load(&state.database, project_id)
         .await?
         .ok_or(AnalysisError::ProjectNotFound)?;
-    let mirror = Mirror::open(mirror_root, &project.remote).await?;
+    let mirror = Mirror::open(&state.mirrors, &project.remote).await?;
     mirror.fetch().await?;
     let base = match base {
         Some(base) => base,
@@ -92,7 +148,7 @@ pub async fn run(
     };
 
     run_target_in_mirror(
-        store,
+        state,
         &project,
         &mirror,
         Target {
@@ -105,49 +161,41 @@ pub async fn run(
     .await
 }
 
-pub(crate) async fn run_target_in_mirror(
-    store: &Store,
+pub async fn run_target_in_mirror(
+    state: &AppState,
     project: &Project,
     mirror: &Mirror,
     target: Target,
 ) -> Result<Analysis, AnalysisError> {
     let merge_base = mirror.merge_base(&target.base, &target.head).await?;
     let changed_files = mirror.changed_files(&target.base, &target.head).await?;
-    let analyzers = effective_analyzers(
-        project.uses_default_analyzers,
-        if project.uses_default_analyzers {
-            Vec::new()
-        } else {
-            store.custom_project_analyzers(project.id).await?
-        },
-    );
-    let subject = store.upsert_subject(project.id, target.subject).await?;
-    let snapshot = store
-        .record_snapshot(
-            subject.id,
-            target.head.clone(),
-            Some(target.base.clone()),
-            Some(merge_base),
-            target.forge,
-        )
-        .await?;
+    let analyzers = project.effective_analyzers(&state.database).await?;
+    let subject = Subject::upsert(&state.database, project.id, target.subject).await?;
+    let snapshot = Snapshot::record(
+        &state.database,
+        subject.id,
+        target.head.clone(),
+        Some(target.base.clone()),
+        Some(merge_base),
+        target.forge,
+    )
+    .await?;
     let check_runs = analyzers
         .iter()
         .any(|analyzer| analyzer == ci_checks::ANALYZER)
-        .then(|| check_run_input(project, &target.head));
+        .then(|| check_run_input(project, &target.head, &state.forge));
     let check_runs = match check_runs {
         Some(input) => Some(input.await),
         None => None,
     };
     if let Some(CheckRunInput::Ready(check_runs)) = check_runs.as_ref() {
-        store.replace_check_runs(snapshot.id, check_runs).await?;
+        ci_checks::CheckRun::replace(&state.database, snapshot.id, check_runs).await?;
     }
 
     let mut completed = Vec::new();
     for analyzer in analyzers {
-        let previous = store
-            .last_successful_analyzer(subject.id, &analyzer, snapshot.id)
-            .await?;
+        let previous =
+            Run::last_successful(&state.database, subject.id, &analyzer, snapshot.id).await?;
         let result = evaluate(
             &analyzer,
             mirror,
@@ -176,16 +224,18 @@ pub(crate) async fn run_target_in_mirror(
         };
         let finding_count = findings.len() as u64;
         let signal_count = signals.len() as u64;
-        let run = store
-            .record_run(RunRecord {
+        let run = Run::record(
+            &state.database,
+            NewRun {
                 snapshot_id: snapshot.id,
                 analyzer: &analyzer,
                 status,
                 compared_against: previous.map(|run| run.snapshot_id),
                 findings: &findings,
                 signals: &signals,
-            })
-            .await?;
+            },
+        )
+        .await?;
 
         completed.push(AnalyzerRun {
             run,
@@ -193,6 +243,7 @@ pub(crate) async fn run_target_in_mirror(
             signal_count,
         });
     }
+    snapshot.mark_analysed(&state.database).await?;
 
     Ok(Analysis {
         snapshot,
@@ -200,14 +251,14 @@ pub(crate) async fn run_target_in_mirror(
     })
 }
 
-async fn check_run_input(project: &Project, head: &CommitSha) -> CheckRunInput {
-    let result = async {
-        let reader = ForgeReader::new()?;
-        reader
-            .check_runs(&project.remote, project.forge_kind, head)
-            .await
-    }
-    .await;
+async fn check_run_input(
+    project: &Project,
+    head: &CommitSha,
+    reader: &ForgeReader,
+) -> CheckRunInput {
+    let result = reader
+        .check_runs(&project.remote, project.forge_kind, head)
+        .await;
 
     match result {
         Ok(check_runs) => CheckRunInput::Ready(check_runs),
@@ -225,8 +276,8 @@ async fn evaluate(
     check_runs: Option<&CheckRunInput>,
 ) -> Result<
     (
-        Vec<crate::finding::NewFinding>,
-        Vec<crate::signal::NewSignal>,
+        Vec<crate::analysis::finding::NewFinding>,
+        Vec<crate::analysis::signal::NewSignal>,
     ),
     AnalyzerError,
 > {
@@ -265,7 +316,9 @@ async fn evaluate(
             let checks = match check_runs {
                 CheckRunInput::Ready(checks) => checks,
                 CheckRunInput::NotConfigured => return Err(AnalyzerError::CiNotConfigured),
-                CheckRunInput::Failed(message) => return Err(AnalyzerError::CiRead(message.clone())),
+                CheckRunInput::Failed(message) => {
+                    return Err(AnalyzerError::CiRead(message.clone()));
+                }
             };
             let classification = ci_checks::classify(checks);
 
@@ -284,7 +337,7 @@ async fn manifest_findings(
     base: &CommitSha,
     head: &CommitSha,
     changed_files: &[ChangedFile],
-) -> Result<Vec<crate::finding::NewFinding>, AnalyzerError> {
+) -> Result<Vec<crate::analysis::finding::NewFinding>, AnalyzerError> {
     let mut findings = Vec::new();
 
     for changed in changed_files {
@@ -308,7 +361,7 @@ async fn secret_findings(
     base: &CommitSha,
     head: &CommitSha,
     changed_files: &[ChangedFile],
-) -> Result<Vec<crate::finding::NewFinding>, AnalyzerError> {
+) -> Result<Vec<crate::analysis::finding::NewFinding>, AnalyzerError> {
     let mut scanned_bytes: u64 = 0;
     let mut findings = Vec::new();
 
@@ -366,7 +419,7 @@ async fn workflow_findings(
     base: &CommitSha,
     head: &CommitSha,
     changed_files: &[ChangedFile],
-) -> Result<Vec<crate::finding::NewFinding>, AnalyzerError> {
+) -> Result<Vec<crate::analysis::finding::NewFinding>, AnalyzerError> {
     let mut findings = Vec::new();
 
     for changed in changed_files {
@@ -392,7 +445,7 @@ async fn repository_control_findings(
     base: &CommitSha,
     head: &CommitSha,
     changed_files: &[ChangedFile],
-) -> Result<Vec<crate::finding::NewFinding>, AnalyzerError> {
+) -> Result<Vec<crate::analysis::finding::NewFinding>, AnalyzerError> {
     let mut findings = Vec::new();
 
     for changed in changed_files {
@@ -414,7 +467,7 @@ async fn hygiene_signals(
     mirror: &Mirror,
     head: &CommitSha,
     changed_files: &[ChangedFile],
-) -> Result<Vec<crate::signal::NewSignal>, AnalyzerError> {
+) -> Result<Vec<crate::analysis::signal::NewSignal>, AnalyzerError> {
     let mut sizes = BTreeMap::new();
     for changed in changed_files {
         if changed.change != FileChange::Deleted {

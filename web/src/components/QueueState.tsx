@@ -37,6 +37,22 @@ export const QueueStateBadge = (properties: { state: QueueState; }) => (
         </Tooltip>
       )}
     </Match>
+    <Match when={properties.state.phase === "waiting" ? properties.state : undefined}>
+      {waiting => (
+        <Tooltip>
+          <Tooltip.Trigger as="span" class={QUEUED}>
+            <VsWatch size={12} />
+            Waiting
+          </Tooltip.Trigger>
+          <Tooltip.Portal>
+            <Tooltip.Content class={TIP}>
+              <Tooltip.Arrow />
+              {`${waiting().reason ?? "Waiting for its turn."} Next try at ${new Date(waiting().untilIso).toLocaleTimeString()}.`}
+            </Tooltip.Content>
+          </Tooltip.Portal>
+        </Tooltip>
+      )}
+    </Match>
     <Match when={properties.state.phase === "failed" ? properties.state : undefined}>
       {failed => (
         <Tooltip>

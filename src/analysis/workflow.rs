@@ -1,9 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::confidence::Confidence;
-use crate::finding::fingerprint::{Components, Fingerprint};
-use crate::finding::{Attribution, LineSpan, Location, NewFinding, Severity};
-use crate::vcs::RepoPath;
+use crate::analysis::finding::fingerprint::{Components, Fingerprint};
+use crate::prelude::*;
 
 pub const ANALYZER: &str = "workflow-security";
 
@@ -13,9 +11,9 @@ const UNSAFE_UNTRUSTED_CHECKOUT: &str = "unsafe-untrusted-checkout";
 const SHELL_PIPE: &str = "shell-pipe";
 
 pub fn is_workflow(path: &RepoPath) -> bool {
-    path.as_str().strip_prefix(".github/workflows/").is_some_and(|name| {
-        name.ends_with(".yml") || name.ends_with(".yaml")
-    })
+    path.as_str()
+        .strip_prefix(".github/workflows/")
+        .is_some_and(|name| name.ends_with(".yml") || name.ends_with(".yaml"))
 }
 
 pub fn delta(path: &RepoPath, base: Option<&str>, head: &str) -> Vec<NewFinding> {
@@ -90,10 +88,11 @@ fn permission_widenings(lines: &[&str]) -> Vec<Observation> {
         let indentation = indent(clean);
         let trimmed = clean.trim();
 
-        if let Some(active_indent) = permissions_indent {
-            if !trimmed.is_empty() && indentation <= active_indent {
-                permissions_indent = None;
-            }
+        if let Some(active_indent) = permissions_indent
+            && !trimmed.is_empty()
+            && indentation <= active_indent
+        {
+            permissions_indent = None;
         }
 
         if let Some(value) = trimmed.strip_prefix("permissions:") {
@@ -140,7 +139,9 @@ fn unsafe_untrusted_checkouts(lines: &[&str]) -> Vec<Observation> {
     let triggers = lines
         .iter()
         .enumerate()
-        .filter_map(|(index, line)| untrusted_trigger(line).map(|trigger| (index as u32 + 1, trigger)))
+        .filter_map(|(index, line)| {
+            untrusted_trigger(line).map(|trigger| (index as u32 + 1, trigger))
+        })
         .collect::<Vec<_>>();
     if triggers.is_empty() {
         return Vec::new();
@@ -178,7 +179,11 @@ fn unsafe_untrusted_checkouts(lines: &[&str]) -> Vec<Observation> {
     found
 }
 
-fn checkout_head_ref(lines: &[&str], action_index: usize, action_indent: usize) -> Option<(u32, String)> {
+fn checkout_head_ref(
+    lines: &[&str],
+    action_index: usize,
+    action_indent: usize,
+) -> Option<(u32, String)> {
     for (index, line) in lines.iter().enumerate().skip(action_index + 1) {
         let clean = uncomment(line);
         let trimmed = clean.trim();
@@ -210,14 +215,20 @@ fn shell_pipes(lines: &[&str]) -> Vec<Observation> {
         let trimmed = clean.trim();
         let indentation = indent(clean);
 
-        if let Some(active_indent) = run_indent {
-            if !trimmed.is_empty() && indentation <= active_indent {
-                run_indent = None;
-            }
+        if let Some(active_indent) = run_indent
+            && !trimmed.is_empty()
+            && indentation <= active_indent
+        {
+            run_indent = None;
         }
 
-        let Some(value) = trimmed.strip_prefix("run:").or_else(|| trimmed.strip_prefix("- run:")) else {
-            if run_indent.is_some_and(|active_indent| indentation > active_indent) && is_shell_pipe(trimmed) {
+        let Some(value) = trimmed
+            .strip_prefix("run:")
+            .or_else(|| trimmed.strip_prefix("- run:"))
+        else {
+            if run_indent.is_some_and(|active_indent| indentation > active_indent)
+                && is_shell_pipe(trimmed)
+            {
                 found.push(shell_pipe_observation(index, trimmed));
             }
             continue;
@@ -286,7 +297,8 @@ fn is_shell_pipe(value: &str) -> bool {
 }
 
 fn contains_command(value: &str, command: &str) -> bool {
-    value.split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+    value
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
         .any(|word| word == command)
 }
 
@@ -295,10 +307,7 @@ fn uncomment(line: &str) -> &str {
 }
 
 fn yaml_value(value: &str) -> &str {
-    value.trim()
-        .trim_matches('"')
-        .trim_matches('\'')
-        .trim()
+    value.trim().trim_matches('"').trim_matches('\'').trim()
 }
 
 fn indent(line: &str) -> usize {
@@ -357,7 +366,10 @@ mod tests {
         );
 
         assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].title, "workflow action is not pinned to a commit");
+        assert_eq!(
+            findings[0].title,
+            "workflow action is not pinned to a commit"
+        );
         assert!(findings[0].detail.contains("actions/checkout@v4"));
     }
 
@@ -383,7 +395,10 @@ mod tests {
         );
 
         assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].title, "untrusted workflow trigger checks out pull-request code");
+        assert_eq!(
+            findings[0].title,
+            "untrusted workflow trigger checks out pull-request code"
+        );
         assert_eq!(findings[0].severity, Severity::Critical);
     }
 
@@ -396,7 +411,10 @@ mod tests {
         );
 
         assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].title, "workflow pipes downloaded content into a shell");
+        assert_eq!(
+            findings[0].title,
+            "workflow pipes downloaded content into a shell"
+        );
     }
 
     #[test]

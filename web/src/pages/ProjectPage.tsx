@@ -8,14 +8,12 @@ import type { components } from "../api/schema.gen";
 import { ProjectDashboard } from "../components/ProjectDashboard";
 import { ProjectHeader } from "../components/ProjectHeader";
 import { forgeKind } from "../domain/analysis";
-import { isMoving, queueState } from "../domain/job";
+import { isMoving, nextQueueReadMs, queueState } from "../domain/job";
 
 type Project = components["schemas"]["ProjectOutput"];
 type ProjectState = { phase: "loading"; } | { phase: "loaded"; project: Project; } | { phase: "error"; message: string; };
 type HistoryState = { phase: "loading"; } | { phase: "loaded"; analyses: readonly Analysis[]; } | { phase: "error"; message: string; };
 type DiscoverState = { phase: "ready"; } | { phase: "running"; } | { phase: "error"; message: string; };
-
-const QUEUE_POLL_MS = 4000;
 
 export const ProjectPage = () => {
   const [state, setState] = createSignal<ProjectState>({ phase: "loading" });
@@ -91,13 +89,15 @@ export const ProjectPage = () => {
   );
 
   createEffect(
-    () => [routeParameters.projectId, isMoving(queueState(jobs()))] as const,
-    ([projectId, moving]) => {
-      if (!moving) return;
+    () => [routeParameters.projectId, jobs()] as const,
+    ([projectId, current]) => {
+      const delayMs = nextQueueReadMs(current);
 
-      const timer = setInterval(() => void loadJobs(projectId), QUEUE_POLL_MS);
+      if (delayMs === undefined) return;
 
-      return () => clearInterval(timer);
+      const timer = setTimeout(() => void loadJobs(projectId), delayMs);
+
+      return () => clearTimeout(timer);
     },
   );
 

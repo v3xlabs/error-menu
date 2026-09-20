@@ -1,13 +1,16 @@
+use std::collections::BTreeMap;
+
+use jiff::Timestamp;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use super::{
-    ChangeState, CommitReading, DiscoveredBranch, DiscoveredChange, DiscoveredProject, ForgeAccount,
-    ForgeKind, ForgeMetadata,
+    ChangeState, CommitReading, DiscoveredBranch, DiscoveredChange, DiscoveredProject,
+    ForgeAccount, ForgeKind, ForgeMetadata,
 };
 use crate::analysis::ci_checks::{CheckConclusion, CheckRun, CheckStatus};
-use crate::person::{Person, PersonRole, Signature};
-use crate::vcs::{CommitSha, CommitShaError, RemoteUrl};
+use crate::prelude::*;
+use crate::vcs::CommitShaError;
 
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const PAGE_SIZE: &str = "100";
@@ -20,6 +23,12 @@ pub enum ForgeReadError {
     ForgeType,
     #[error("the forge response exceeded its {MAX_RESPONSE_BYTES} byte limit")]
     ResponseTooLarge,
+    #[error(
+        "{host} refused the request with status {status}; error.menu holds no credential for that host"
+    )]
+    Unauthorised { host: String, status: u16 },
+    #[error("{host} has no request budget left until {reset}")]
+    RateLimited { host: String, reset: Timestamp },
     #[error("requesting forge data: {0}")]
     Request(#[from] reqwest::Error),
     #[error("reading forge data: {0}")]
@@ -32,8 +41,12 @@ pub enum ForgeReadError {
     },
 }
 
+#[derive(Clone)]
 pub struct ForgeReader {
     client: reqwest::Client,
+    /// One token per host. A credential for one forge must never travel to another,
+    /// because a project's remote is chosen by whoever created the project.
+    credentials: BTreeMap<String, String>,
 }
 
 struct Repository {
@@ -44,6 +57,8 @@ struct Repository {
 }
 
 impl ForgeReader {
+    /// `FORGE_TOKENS` holds `host=token` pairs separated by commas. Without an entry for
+    /// a host, requests to it stay anonymous and share that host's anonymous budget.
     pub fn new() -> Result<Self, ForgeReadError> {
         Ok(Self {
             client: reqwest::Client::builder()
@@ -52,6 +67,7 @@ impl ForgeReader {
                 .timeout(std::time::Duration::from_secs(15))
                 .user_agent(concat!("error.menu/", env!("CARGO_PKG_VERSION")))
                 .build()?,
+            credentials: credentials(std::env::var("FORGE_TOKENS").as_deref().unwrap_or("")),
         })
     }
 
@@ -194,11 +210,20 @@ impl ForgeReader {
             let pipeline_id = pipeline.id.to_string();
             let jobs: Vec<GitlabJob> = self
                 .get_with_query(
-                    repository.endpoint(&["projects", &project_id, "pipelines", &pipeline_id, "jobs"]),
+                    repository.endpoint(&[
+                        "projects",
+                        &project_id,
+                        "pipelines",
+                        &pipeline_id,
+                        "jobs",
+                    ]),
                     &[("per_page", PAGE_SIZE)],
                 )
                 .await?;
-            check_runs.extend(jobs.into_iter().map(|job| job.into_check_run(repository, &project_id)));
+            check_runs.extend(
+                jobs.into_iter()
+                    .map(|job| job.into_check_run(repository, &project_id)),
+            );
         }
 
         Ok(check_runs)
@@ -319,8 +344,18 @@ impl ForgeReader {
         &self,
         url: reqwest::Url,
     ) -> Result<Value, ForgeReadError> {
-        let response = self.client.get(url).send().await?.error_for_status()?;
-        decode(response).await
+        let host = url.host_str().unwrap_or_default().to_owned();
+        let mut request = self.client.get(url);
+        if let Some(token) = self.credentials.get(&host) {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await?;
+        let status = response.status();
+        if status.is_client_error() {
+            return Err(refusal(host, &response, status.as_u16()));
+        }
+
+        decode(response.error_for_status()?).await
     }
 
     async fn get_with_query<Value: DeserializeOwned>(
@@ -431,6 +466,42 @@ impl Repository {
         drop(owned);
         url
     }
+}
+
+/// A forge that is out of budget and a forge that will not answer without a credential
+/// both answer 403. Only the exhausted budget is worth waiting for, and the forge says
+/// when the wait ends, so that answer must survive as more than a status code.
+fn refusal(host: String, response: &reqwest::Response, status: u16) -> ForgeReadError {
+    let header = |name: &str| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+    };
+    let exhausted = header("x-ratelimit-remaining") == Some("0");
+    let reset = header("x-ratelimit-reset")
+        .and_then(|value| value.parse::<i64>().ok())
+        .and_then(|seconds| Timestamp::from_second(seconds).ok())
+        .or_else(|| {
+            header("retry-after")
+                .and_then(|value| value.parse::<i64>().ok())
+                .map(|seconds| {
+                    Timestamp::now() + std::time::Duration::from_secs(seconds.max(0) as u64)
+                })
+        });
+    match reset.filter(|_| exhausted || status == 429) {
+        Some(reset) => ForgeReadError::RateLimited { host, reset },
+        None => ForgeReadError::Unauthorised { host, status },
+    }
+}
+
+fn credentials(configured: &str) -> BTreeMap<String, String> {
+    configured
+        .split(',')
+        .filter_map(|entry| entry.split_once('='))
+        .map(|(host, token)| (host.trim().to_owned(), token.trim().to_owned()))
+        .filter(|(host, token)| !host.is_empty() && !token.is_empty())
+        .collect()
 }
 
 async fn decode<Value: DeserializeOwned>(
@@ -561,8 +632,10 @@ impl GiteaCommitStatus {
 fn check_status(value: &str) -> CheckStatus {
     match value {
         "queued" | "pending" | "created" | "scheduled" => CheckStatus::Queued,
-        "completed" | "success" | "failure" | "failed" | "error" | "warning" | "neutral" | "skipped" | "cancelled"
-        | "canceled" | "timed_out" | "action_required" | "stale" => CheckStatus::Completed,
+        "completed" | "success" | "failure" | "failed" | "error" | "warning" | "neutral"
+        | "skipped" | "cancelled" | "canceled" | "timed_out" | "action_required" | "stale" => {
+            CheckStatus::Completed
+        }
         _ => CheckStatus::InProgress,
     }
 }
@@ -670,7 +743,7 @@ impl TryFrom<GithubPull> for DiscoveredChange {
                 head_ref: Some(change.head.name),
                 state: Some(state),
                 merge_commit: optional_sha(change.merge_commit_sha.as_deref()),
-                people: crate::person::deduplicate(people),
+                people: crate::project::person::deduplicate(people),
                 signature: Signature::default(),
             },
         })
@@ -765,7 +838,7 @@ impl TryFrom<GitlabChange> for DiscoveredChange {
                 head_ref: Some(change.source_branch),
                 state: Some(state),
                 merge_commit: optional_sha(change.merge_commit_sha.as_deref()),
-                people: crate::person::deduplicate(people),
+                people: crate::project::person::deduplicate(people),
                 signature: Signature::default(),
             },
         })
@@ -863,7 +936,7 @@ impl TryFrom<GiteaChange> for DiscoveredChange {
                 head_ref: Some(change.head.name),
                 state: Some(state),
                 merge_commit: optional_sha(change.merge_commit_sha.as_deref()),
-                people: crate::person::deduplicate(people),
+                people: crate::project::person::deduplicate(people),
                 signature: Signature::default(),
             },
         })
@@ -910,7 +983,10 @@ struct CommitSigner {
 
 /// One account, only when the forge gave both halves of the join: the address the commit
 /// carries and the account it belongs to.
-fn account_of(identity: Option<CommitIdentity>, account: Option<CommitAccount>) -> Option<ForgeAccount> {
+fn account_of(
+    identity: Option<CommitIdentity>,
+    account: Option<CommitAccount>,
+) -> Option<ForgeAccount> {
     let email = identity?.email?;
     let account = account?;
 
@@ -933,6 +1009,59 @@ mod tests {
 
     fn repository(remote: &str, kind: ForgeKind) -> Repository {
         Repository::from_remote(&RemoteUrl::new(remote).unwrap(), kind).unwrap()
+    }
+
+    fn response(status: u16, headers: &[(&str, &str)]) -> reqwest::Response {
+        let mut built = poem::http::Response::builder().status(status);
+        for (name, value) in headers {
+            built = built.header(*name, *value);
+        }
+
+        reqwest::Response::from(built.body(Vec::new()).expect("a response"))
+    }
+
+    #[test]
+    fn an_exhausted_budget_is_told_apart_from_a_refusal_and_keeps_its_reset() {
+        let exhausted = refusal(
+            "api.github.com".to_owned(),
+            &response(
+                403,
+                &[
+                    ("x-ratelimit-remaining", "0"),
+                    ("x-ratelimit-reset", "3600"),
+                ],
+            ),
+            403,
+        );
+        assert!(matches!(
+            exhausted,
+            ForgeReadError::RateLimited { reset, .. } if reset == Timestamp::from_second(3600).unwrap()
+        ));
+
+        let refused = refusal(
+            "api.github.com".to_owned(),
+            &response(403, &[("x-ratelimit-remaining", "58")]),
+            403,
+        );
+        assert!(matches!(
+            refused,
+            ForgeReadError::Unauthorised { status: 403, .. }
+        ));
+    }
+
+    #[test]
+    fn a_credential_is_kept_for_its_own_host_only() {
+        let configured = credentials(" github.com = token-one , forge.example = token-two ,=x, y=");
+
+        assert_eq!(
+            configured.get("github.com").map(String::as_str),
+            Some("token-one")
+        );
+        assert_eq!(
+            configured.get("forge.example").map(String::as_str),
+            Some("token-two")
+        );
+        assert_eq!(configured.len(), 2);
     }
 
     #[test]
@@ -1050,8 +1179,10 @@ mod tests {
         assert_eq!(check_status("running"), CheckStatus::InProgress);
         assert_eq!(check_status("failed"), CheckStatus::Completed);
         assert_eq!(check_conclusion("failed"), Some(CheckConclusion::Failure));
-        assert_eq!(check_conclusion("canceled"), Some(CheckConclusion::Cancelled));
+        assert_eq!(
+            check_conclusion("canceled"),
+            Some(CheckConclusion::Cancelled)
+        );
         assert_eq!(check_conclusion("running"), None);
     }
-
 }

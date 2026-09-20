@@ -4,6 +4,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::database::DatabaseError;
+
 /// Where a remote lives. The scheme is checked against a short list, because git accepts
 /// transports that run a command instead of opening a connection, and the url of a watched
 /// project is not ours. `file://` is off the list for the same reason: gitoxide serves it by
@@ -19,6 +21,12 @@ pub enum RemoteUrlError {
     Empty,
     #[error("remote url must start with one of {}", ALLOWED_SCHEMES.join(", "))]
     Scheme,
+    #[error("remote url must have a valid host and no query, fragment, or control characters")]
+    Invalid,
+    #[error("remote url must not contain credentials")]
+    Credentials,
+    #[error("remote destination must be public")]
+    Destination,
 }
 
 impl RemoteUrl {
@@ -34,7 +42,23 @@ impl RemoteUrl {
         {
             return Err(RemoteUrlError::Scheme);
         }
-        Ok(Self(normalised))
+        if trimmed
+            .chars()
+            .any(|character| character.is_control() || character == '\\')
+        {
+            return Err(RemoteUrlError::Invalid);
+        }
+        let parsed = url::Url::parse(&normalised).map_err(|_| RemoteUrlError::Invalid)?;
+        if parsed.host().is_none() || parsed.query().is_some() || parsed.fragment().is_some() {
+            return Err(RemoteUrlError::Invalid);
+        }
+        if parsed.password().is_some()
+            || (parsed.scheme() == "https" && !parsed.username().is_empty())
+        {
+            return Err(RemoteUrlError::Credentials);
+        }
+        crate::outbound::validate_host(parsed.host()).map_err(|_| RemoteUrlError::Destination)?;
+        Ok(Self(parsed.to_string()))
     }
 
     pub fn as_str(&self) -> &str {
@@ -62,7 +86,11 @@ fn normalise(value: &str) -> String {
 /// digits and nothing else, up to the first slash.
 fn scp_colon(rest: &str) -> Option<usize> {
     let authority_end = rest.find('/').unwrap_or(rest.len());
-    let colon = rest[..authority_end].find(':')?;
+    if rest[..authority_end].contains(['[', ']']) {
+        return None;
+    }
+    let host_start = rest[..authority_end].rfind('@').map_or(0, |at| at + 1);
+    let colon = host_start + rest[host_start..authority_end].find(':')?;
     let port = &rest[colon + 1..authority_end];
 
     (port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit())).then_some(colon)
@@ -114,6 +142,13 @@ impl CommitSha {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    pub fn from_stored(value: &str, field: &'static str) -> Result<Self, DatabaseError> {
+        Self::new(value).map_err(|_| DatabaseError::Unreadable {
+            field,
+            value: value.to_owned(),
+        })
     }
 }
 
@@ -173,6 +208,13 @@ impl RepoPath {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    pub fn from_stored(value: &str, field: &'static str) -> Result<Self, DatabaseError> {
+        Self::new(value).map_err(|_| DatabaseError::Unreadable {
+            field,
+            value: value.to_owned(),
+        })
     }
 }
 
@@ -249,6 +291,22 @@ mod tests {
     }
 
     #[test]
+    fn rejects_remote_credentials_and_ambiguous_urls() {
+        for remote in [
+            "https://token@example.invalid/repo",
+            "https://user:password@example.invalid/repo",
+            "ssh://git:password@example.invalid/repo",
+            "https://example.invalid/repo?token=secret",
+            "https://example.invalid/repo#fragment",
+            "https://example.invalid\\@127.0.0.1/repo",
+            "https://127.1/repo",
+            "https://[::ffff:127.0.0.1]/repo",
+        ] {
+            assert!(RemoteUrl::new(remote).is_err(), "{remote}");
+        }
+    }
+
+    #[test]
     fn normalises_the_scp_spelling_of_an_ssh_remote() {
         assert_eq!(
             RemoteUrl::new("git@github.com:ethereum/desktop-wallet")
@@ -273,7 +331,9 @@ mod tests {
             "ssh://git@example.invalid:2222/owner/repo"
         );
         assert_eq!(
-            RemoteUrl::new("https://github.com/owner/repo").unwrap().as_str(),
+            RemoteUrl::new("https://github.com/owner/repo")
+                .unwrap()
+                .as_str(),
             "https://github.com/owner/repo"
         );
         assert_eq!(

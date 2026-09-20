@@ -1763,6 +1763,8 @@ export interface components {
             findings: components["schemas"]["FindingOutput"][];
             signals: components["schemas"]["SignalOutput"][];
         };
+        /** @enum {string} */
+        AnalyzerToneOutput: "alarming" | "attention" | "clear" | "running" | "unscanned";
         /** ApiTokenOutput */
         ApiTokenOutput: {
             name: string;
@@ -1917,6 +1919,18 @@ export interface components {
         };
         /** @enum {string} */
         PersonRoleOutput: "author" | "committer" | "co_author" | "signed_off_by" | "submitter" | "reviewer";
+        /** ProjectAnalyzerOutput */
+        ProjectAnalyzerOutput: {
+            analyzer: string;
+            /** Format: uint64 */
+            finding_count: number;
+            tone: components["schemas"]["AnalyzerToneOutput"];
+        };
+        /** ProjectBranchOutput */
+        ProjectBranchOutput: {
+            snapshot_id: string;
+            analyzers: components["schemas"]["ProjectAnalyzerOutput"][];
+        };
         /** ProjectMemberOutput */
         ProjectMemberOutput: {
             user_id: string;
@@ -1942,6 +1956,11 @@ export interface components {
             /** @description Where the mark lives in the repository, so it can be shown and changed by hand. */
             icon_light_source?: string;
             icon_dark_source?: string;
+            /**
+             * @description How the default branch last scanned. Only the project list reports it, because it
+             *     is the one view that shows many projects without opening any of them.
+             */
+            default_branch?: components["schemas"]["ProjectBranchOutput"] & unknown;
         };
         /** @enum {string} */
         ProjectRoleOutput: "viewer" | "operator" | "owner";

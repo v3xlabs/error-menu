@@ -4,17 +4,12 @@ import { createEffect, createSignal, For, Show } from "solid-js";
 import type { Job, Project } from "../api/projects";
 import { listJobs, listProjects } from "../api/projects";
 import { QueueStateBadge } from "../components/QueueState";
-import { queueState } from "../domain/job";
+import { nextQueueReadMs, queueState } from "../domain/job";
 
 type QueuePageState
   = | { phase: "loading"; }
     | { phase: "loaded"; jobs: readonly Job[]; names: Record<string, string>; }
     | { phase: "error"; message: string; };
-
-const POLL_MS = 4000;
-
-const isMoving = (jobs: readonly Job[]): boolean =>
-  jobs.some(job => job.state === "queued" || job.state === "running");
 
 const renderJobs = (state: QueuePageState): JSX.Element => {
   switch (state.phase) {
@@ -83,19 +78,22 @@ export const QueuePage = () => {
       void load();
     },
   );
-
   createEffect(
     () => {
       const current = state();
 
-      return current.phase === "loaded" && isMoving(current.jobs);
+      return current.phase === "loaded" ? current.jobs : undefined;
     },
-    (moving) => {
-      if (!moving) return;
+    (jobs) => {
+      if (jobs === undefined) return;
 
-      const timer = setInterval(() => void load(), POLL_MS);
+      const delayMs = nextQueueReadMs(jobs);
 
-      return () => clearInterval(timer);
+      if (delayMs === undefined) return;
+
+      const timer = setTimeout(() => void load(), delayMs);
+
+      return () => clearTimeout(timer);
     },
   );
 

@@ -1,6 +1,4 @@
-use crate::confidence::Confidence;
-use crate::signal::{NewSignal, SignalKey, SignalValue};
-use crate::vcs::RepoPath;
+use crate::prelude::*;
 use crate::vcs::mirror::{ChangedFile, FileChange};
 
 pub const ANALYZER: &str = "repository-hygiene";

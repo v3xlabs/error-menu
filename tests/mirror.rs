@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use error_menu::analysis::finding::{Ecosystem, Location, Severity};
 use error_menu::analysis::lockfile;
-use error_menu::finding::{Ecosystem, Location, Severity};
-use error_menu::vcs::mirror::{FileChange, Mirror};
+use error_menu::vcs::mirror::{FileChange, Mirror, MirrorError};
 use error_menu::vcs::{CommitSha, RemoteUrl, RepoPath};
 
 /// A mirror holding two commits, the second swapping a checksum under an unchanged
@@ -75,6 +75,23 @@ impl Fixture {
             remote,
             commits,
         }
+    }
+
+    fn with_tree(build: impl FnOnce(&gix::Repository) -> gix::ObjectId) -> Self {
+        let mut fixture = Self::build();
+        let path = Mirror::directory(&fixture.root.join("mirrors"), &fixture.remote);
+        let repository = gix::open(path).expect("opens the fixture repository");
+        let tree = build(&repository);
+        let parent = gix::ObjectId::from_hex(fixture.commits[1].as_str().as_bytes())
+            .expect("the fixture head is a full sha");
+        let commit = repository
+            .commit("HEAD", "tree traversal", tree, [parent])
+            .expect("writes the tree commit")
+            .detach();
+        fixture.commits.push(
+            CommitSha::new(&commit.to_hex().to_string()).expect("the tree commit is a full sha"),
+        );
+        fixture
     }
 
     async fn mirror(&self) -> Mirror {
@@ -190,4 +207,153 @@ async fn a_missing_path_is_an_answer_and_not_a_failure() {
         .expect("reads");
 
     assert!(absent.is_none());
+}
+
+#[tokio::test]
+async fn a_requested_path_limit_fails_instead_of_hiding_files() {
+    let fixture = Fixture::with_tree(|repository| {
+        let blob = repository
+            .write_blob(b"contents")
+            .expect("writes a blob")
+            .detach();
+        let mut tree = gix::objs::Tree::empty();
+        for name in ["a.txt", "b.txt"] {
+            tree.entries.push(gix::objs::tree::Entry {
+                mode: gix::objs::tree::EntryKind::Blob.into(),
+                filename: name.into(),
+                oid: blob,
+            });
+        }
+        repository
+            .write_object(&tree)
+            .expect("writes the tree")
+            .detach()
+    });
+    let mirror = fixture.mirror().await;
+    let revision = &fixture.commits[2];
+
+    let paths = mirror
+        .paths_at(revision, 2)
+        .await
+        .expect("lists both files");
+    assert_eq!(
+        paths,
+        vec![
+            RepoPath::new("a.txt").unwrap(),
+            RepoPath::new("b.txt").unwrap()
+        ]
+    );
+    assert!(matches!(
+        mirror.paths_at(revision, 1).await,
+        Err(MirrorError::TooManyPaths { limit: 1 })
+    ));
+}
+
+#[tokio::test]
+async fn repeated_empty_subtrees_count_toward_the_unlimited_path_walk() {
+    let fixture = Fixture::with_tree(|repository| {
+        let mut subtree = repository
+            .write_object(gix::objs::Tree::empty())
+            .expect("writes an empty tree")
+            .detach();
+        // Fifteen branching levels expand to 65,534 directory occurrences and no files.
+        for _ in 0..15 {
+            let mut tree = gix::objs::Tree::empty();
+            for name in ["a", "b"] {
+                tree.entries.push(gix::objs::tree::Entry {
+                    mode: gix::objs::tree::EntryKind::Tree.into(),
+                    filename: name.into(),
+                    oid: subtree,
+                });
+            }
+            subtree = repository
+                .write_object(&tree)
+                .expect("writes a shared subtree")
+                .detach();
+        }
+        subtree
+    });
+    let mirror = fixture.mirror().await;
+
+    assert!(matches!(
+        mirror.paths_at(&fixture.commits[2], usize::MAX).await,
+        Err(MirrorError::TooManyTreeEntries { limit: 20_000 })
+    ));
+}
+
+#[tokio::test]
+async fn tree_and_directory_entry_limits_include_the_boundary() {
+    for count in [20_000, 20_001] {
+        let fixture = Fixture::with_tree(|repository| {
+            let blob = repository
+                .write_blob(b"contents")
+                .expect("writes a blob")
+                .detach();
+            let mut tree = gix::objs::Tree::empty();
+            for index in 0..count {
+                tree.entries.push(gix::objs::tree::Entry {
+                    mode: gix::objs::tree::EntryKind::Blob.into(),
+                    filename: format!("file-{index:05}").into(),
+                    oid: blob,
+                });
+            }
+            repository
+                .write_object(&tree)
+                .expect("writes the wide tree")
+                .detach()
+        });
+        let mirror = fixture.mirror().await;
+        let revision = &fixture.commits[2];
+        let paths = mirror.paths_at(revision, usize::MAX).await;
+        let entries = mirror.entries_at(revision, "").await;
+
+        if count == 20_000 {
+            let paths = paths.expect("accepts the exact traversal limit");
+            let entries = entries.expect("accepts the exact directory limit");
+            assert_eq!(paths.len(), count);
+            assert_eq!(entries.len(), count);
+            assert_eq!(paths[19_999].as_str(), "file-19999");
+            assert_eq!(entries[19_999].name, "file-19999");
+        } else {
+            assert!(matches!(
+                paths,
+                Err(MirrorError::TooManyTreeEntries { limit: 20_000 })
+            ));
+            assert!(matches!(
+                entries,
+                Err(MirrorError::TooManyTreeEntries { limit: 20_000 })
+            ));
+        }
+    }
+}
+
+#[tokio::test]
+async fn repeated_long_directory_paths_have_a_byte_budget() {
+    let fixture = Fixture::with_tree(|repository| {
+        let mut subtree = repository
+            .write_object(gix::objs::Tree::empty())
+            .expect("writes an empty tree")
+            .detach();
+        for _ in 0..13 {
+            let mut tree = gix::objs::Tree::empty();
+            for name in ["a".repeat(64), "b".repeat(64)] {
+                tree.entries.push(gix::objs::tree::Entry {
+                    mode: gix::objs::tree::EntryKind::Tree.into(),
+                    filename: name.into(),
+                    oid: subtree,
+                });
+            }
+            subtree = repository
+                .write_object(&tree)
+                .expect("writes a shared subtree")
+                .detach();
+        }
+        subtree
+    });
+    let mirror = fixture.mirror().await;
+
+    assert!(matches!(
+        mirror.paths_at(&fixture.commits[2], usize::MAX).await,
+        Err(MirrorError::TreePathsTooLarge)
+    ));
 }

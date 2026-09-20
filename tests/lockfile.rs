@@ -1,8 +1,8 @@
 mod common;
 
 use common::sample;
+use error_menu::analysis::finding::NewFinding;
 use error_menu::analysis::lockfile::{Kind, delta};
-use error_menu::finding::NewFinding;
 use error_menu::vcs::RepoPath;
 
 fn report(findings: &[NewFinding]) -> Vec<String> {

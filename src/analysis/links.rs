@@ -1,10 +1,7 @@
 use std::collections::BTreeMap;
 
-use crate::confidence::Confidence;
-use crate::finding::fingerprint::{Components, Fingerprint};
-use crate::finding::{Attribution, LineSpan, Location, NewFinding, Severity};
-use crate::signal::{NewSignal, SignalKey, SignalValue};
-use crate::vcs::RepoPath;
+use crate::analysis::finding::fingerprint::{Components, Fingerprint};
+use crate::prelude::*;
 
 pub const ANALYZER: &str = "link-inventory";
 
@@ -193,7 +190,9 @@ fn site_kind(path: &RepoPath) -> SiteKind {
     let path = path.as_str();
     let name = path.rsplit('/').next().unwrap_or(path);
 
-    if path.starts_with(".github/workflows/") && matches!(name, _ if name.ends_with(".yml") || name.ends_with(".yaml")) {
+    if path.starts_with(".github/workflows/")
+        && matches!(name, _ if name.ends_with(".yml") || name.ends_with(".yaml"))
+    {
         return SiteKind::WorkflowAction;
     }
     if name.eq_ignore_ascii_case("Dockerfile") || name.ends_with(".Dockerfile") {
@@ -205,7 +204,10 @@ fn site_kind(path: &RepoPath) -> SiteKind {
     if name.ends_with(".html") || name.ends_with(".htm") {
         return SiteKind::Html;
     }
-    if matches!(name, "Cargo.lock" | "package-lock.json" | "pnpm-lock.yaml" | "flake.lock") {
+    if matches!(
+        name,
+        "Cargo.lock" | "package-lock.json" | "pnpm-lock.yaml" | "flake.lock"
+    ) {
         return SiteKind::Lockfile;
     }
     if matches!(
@@ -249,41 +251,41 @@ fn container_image<'a>(line: &'a str, path: &RepoPath) -> Option<&'a str> {
 
     let mut values = trimmed[4..].split_ascii_whitespace();
     let first = values.next()?;
-    let image = if first.starts_with("--") { values.next()? } else { first };
+    let image = if first.starts_with("--") {
+        values.next()?
+    } else {
+        first
+    };
 
     (!image.starts_with("${") && image != "scratch").then_some(image)
 }
 
-fn urls(line: &str) -> Vec<&str> {
-    let mut found = Vec::new();
+fn urls(line: &str) -> impl Iterator<Item = &str> {
     let mut remaining = line;
 
-    while let Some(start) = url_start(remaining) {
+    std::iter::from_fn(move || {
+        let Some(start) = url_start(remaining) else {
+            remaining = "";
+            return None;
+        };
         let candidate = &remaining[start..];
         let end = candidate
             .find(|character: char| {
-                character.is_ascii_whitespace() || matches!(character, '"' | '\'' | '<' | '>' | '(' | ')')
+                character.is_ascii_whitespace()
+                    || matches!(character, '"' | '\'' | '<' | '>' | '(' | ')')
             })
             .unwrap_or(candidate.len());
-        let url = &candidate[..end];
-        if !url.is_empty() {
-            found.push(url);
-        }
         remaining = &candidate[end..];
-    }
-
-    found
+        Some(&candidate[..end])
+    })
 }
 
 fn url_start(value: &str) -> Option<usize> {
-    let https = value.find("https://");
-    let http = value.find("http://");
-
-    match (https, http) {
-        (Some(left), Some(right)) => Some(left.min(right)),
-        (Some(index), None) | (None, Some(index)) => Some(index),
-        (None, None) => None,
-    }
+    value.char_indices().find_map(|(index, character)| {
+        (character == 'h'
+            && (value[index..].starts_with("http://") || value[index..].starts_with("https://")))
+        .then_some(index)
+    })
 }
 
 /// One finding per link and file. The occurrence is always zero because the group is the
@@ -368,13 +370,46 @@ mod tests {
 
     #[test]
     fn preserves_container_references_and_html_urls() {
-        let images = inventory(&path("Dockerfile"), "FROM --platform=linux/amd64 ghcr.io/acme/app:1\n");
-        let html = inventory(&path("public/index.html"), "<script src=\"https://cdn.test/app.js\"></script>\n");
+        let images = inventory(
+            &path("Dockerfile"),
+            "FROM --platform=linux/amd64 ghcr.io/acme/app:1\n",
+        );
+        let html = inventory(
+            &path("public/index.html"),
+            "<script src=\"https://cdn.test/app.js\"></script>\n",
+        );
 
         assert_eq!(images[0].text, "ghcr.io/acme/app:1");
         assert_eq!(images[0].site, SiteKind::ContainerImage);
         assert_eq!(html[0].text, "https://cdn.test/app.js");
         assert_eq!(html[0].site, SiteKind::Html);
+    }
+
+    #[test]
+    fn preserves_url_boundaries_and_embedded_schemes() {
+        let text = "éhttp://one.test\t'https://two.test/a?x=1&y=2'\"http://three.test\"<https://four.test>(http://five.test) https://six.test,http://nested.test; https://seven.test\u{a0}suffix HTTPS://ignored.test https://";
+
+        assert_eq!(
+            urls(text).collect::<Vec<_>>(),
+            vec![
+                "http://one.test",
+                "https://two.test/a?x=1&y=2",
+                "http://three.test",
+                "https://four.test",
+                "http://five.test",
+                "https://six.test,http://nested.test;",
+                "https://seven.test\u{a0}suffix",
+                "https://",
+            ]
+        );
+    }
+
+    #[test]
+    fn preserves_every_url_when_only_one_scheme_repeats() {
+        for url in ["http://example.test/path", "https://example.test/path"] {
+            let text = format!("{url} ").repeat(20_000);
+            assert_eq!(urls(&text).collect::<Vec<_>>(), vec![url; 20_000]);
+        }
     }
 
     #[test]
@@ -390,7 +425,10 @@ mod tests {
 
         assert_eq!(report.links, head);
         assert_eq!(report.findings.len(), 1);
-        assert_eq!(report.findings[0].title, "new Markdown link added: https://status.example.test/now");
+        assert_eq!(
+            report.findings[0].title,
+            "new Markdown link added: https://status.example.test/now"
+        );
         assert_eq!(report.signals[0].key, SignalKey::LinksAdded);
         assert_eq!(report.signals[0].value, SignalValue::Count(1));
     }
@@ -402,7 +440,9 @@ mod tests {
         let base = inventory(&source, "");
         let head = inventory(
             &source,
-            &format!("source = \"registry+{registry}\"\nname = \"a\"\nsource = \"registry+{registry}\"\n"),
+            &format!(
+                "source = \"registry+{registry}\"\nname = \"a\"\nsource = \"registry+{registry}\"\n"
+            ),
         );
 
         let report = report(&base, &head);

@@ -1,9 +1,7 @@
 use std::collections::BTreeMap;
 
-use crate::confidence::Confidence;
-use crate::finding::fingerprint::{Components, Fingerprint};
-use crate::finding::{Attribution, Location, NewFinding, Severity};
-use crate::vcs::RepoPath;
+use crate::analysis::finding::fingerprint::{Components, Fingerprint};
+use crate::prelude::*;
 
 pub const ANALYZER: &str = "repository-controls";
 
@@ -77,9 +75,11 @@ pub fn report(path: &RepoPath, base: Option<&str>, head: Option<&str>) -> Contro
         };
     }
 
-    let submodules = (kind == ControlKind::Gitmodules)
-        .then(|| submodule_changes(base.unwrap_or_default(), head.unwrap_or_default()))
-        .unwrap_or_default();
+    let submodules = if kind == ControlKind::Gitmodules {
+        submodule_changes(base.unwrap_or_default(), head.unwrap_or_default())
+    } else {
+        Vec::new()
+    };
 
     ControlReport {
         findings: vec![finding(path, kind)],
@@ -175,7 +175,10 @@ fn submodule_changes(base: &str, head: &str) -> Vec<SubmoduleChange> {
         .into_iter()
         .map(|submodule| (submodule.name.clone(), submodule))
         .collect::<BTreeMap<_, _>>();
-    let names = base.keys().chain(head.keys()).collect::<std::collections::BTreeSet<_>>();
+    let names = base
+        .keys()
+        .chain(head.keys())
+        .collect::<std::collections::BTreeSet<_>>();
 
     names
         .into_iter()
@@ -245,7 +248,10 @@ mod tests {
 
     #[test]
     fn identifies_repository_and_package_manager_control_files() {
-        assert_eq!(kind(&path(".github/CODEOWNERS")), Some(ControlKind::Codeowners));
+        assert_eq!(
+            kind(&path(".github/CODEOWNERS")),
+            Some(ControlKind::Codeowners)
+        );
         assert_eq!(kind(&path(".gitattributes")), Some(ControlKind::Attributes));
         assert_eq!(kind(&path(".gitmodules")), Some(ControlKind::Gitmodules));
         assert_eq!(kind(&path(".npmrc")), Some(ControlKind::PackageManager));
@@ -254,7 +260,11 @@ mod tests {
 
     #[test]
     fn reports_each_changed_control_file_once() {
-        let report = report(&path(".github/CODEOWNERS"), Some("/src @team"), Some("/src @security"));
+        let report = report(
+            &path(".github/CODEOWNERS"),
+            Some("/src @team"),
+            Some("/src @security"),
+        );
 
         assert_eq!(report.findings.len(), 1);
         assert_eq!(report.findings[0].title, "CODEOWNERS changed");
@@ -290,6 +300,10 @@ mod tests {
     fn does_not_report_an_unchanged_control_file() {
         let content = "registry=https://registry.example.test\n";
 
-        assert!(report(&path(".npmrc"), Some(content), Some(content)).findings.is_empty());
+        assert!(
+            report(&path(".npmrc"), Some(content), Some(content))
+                .findings
+                .is_empty()
+        );
     }
 }

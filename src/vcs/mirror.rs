@@ -7,8 +7,8 @@ use std::time::Duration;
 use gix::bstr::{BStr, ByteSlice};
 use gix::diff::tree::{Recorder, Visit, visit};
 
-use crate::person::{Person, PersonRole};
-use crate::vcs::{CommitSha, RemoteUrl, RepoPath, RepoPathError};
+use crate::prelude::*;
+use crate::vcs::RepoPathError;
 
 /// Lockfiles are far smaller than this. The cap exists because zlib reaches roughly
 /// 1032:1, so a few megabytes of pack can decompress to gigabytes, and a hostile pull
@@ -18,6 +18,9 @@ const MAX_BLOB_BYTES: u64 = 8 * 1024 * 1024;
 /// A tree can reference the same subtree many times, so a few kilobytes of objects can
 /// enumerate an enormous number of paths. gitoxide leaves this bound to the caller.
 const MAX_CHANGED_FILES: usize = 5_000;
+
+const MAX_TREE_ENTRIES: usize = 20_000;
+const MAX_TREE_PATH_BYTES: usize = 8 * 1024 * 1024;
 
 const FETCH_SECONDS: u64 = 300;
 
@@ -46,6 +49,12 @@ pub enum MirrorError {
     NotText { path: String },
     #[error("the change touches more than {MAX_CHANGED_FILES} files")]
     TooManyChanges,
+    #[error("the tree contains more than {limit} entries, including directories")]
+    TooManyTreeEntries { limit: usize },
+    #[error("the tree contains more than {limit} file paths")]
+    TooManyPaths { limit: usize },
+    #[error("the tree paths exceed the {MAX_TREE_PATH_BYTES} byte limit")]
+    TreePathsTooLarge,
     #[error("a path in the diff is not valid text")]
     PathNotText,
     #[error("the diff named an unusable path: {source}")]
@@ -272,7 +281,7 @@ impl Mirror {
                 }
             }
 
-            Ok(crate::person::deduplicate(people))
+            Ok(crate::project::person::deduplicate(people))
         })
         .await
     }
@@ -415,9 +424,13 @@ impl Mirror {
             };
 
             let mut entries = Vec::new();
+            let mut budget = TreeBudget::default();
             for entry in tree.iter() {
                 let entry = entry.map_err(|source| failed("reading the tree")(Box::new(source)))?;
-                let name = entry.filename().to_str_lossy().into_owned();
+                let name = entry.filename().to_str_lossy();
+                budget
+                    .observe(directory.len() + usize::from(!directory.is_empty()) + name.len())?;
+                let name = name.into_owned();
                 let full = if directory.is_empty() {
                     name.clone()
                 } else {
@@ -449,9 +462,8 @@ impl Mirror {
         })
         .await
     }
-    /// Every file in the tree at that revision, capped. Used to look for a project's own
-    /// mark, which repositories keep under any name in any directory, so guessing a fixed
-    /// list of paths finds a logo in one repository and nothing in the next.
+    /// Every file in the tree at that revision. Exceeding the file limit or the internal
+    /// traversal limits fails the entire enumeration rather than returning partial paths.
     pub async fn paths_at(
         &self,
         sha: &CommitSha,
@@ -463,18 +475,17 @@ impl Mirror {
         blocking(move || {
             let repository = repository.to_thread_local();
             let tree = tree_at(&repository, &sha)?;
-            let mut recorder = gix::traverse::tree::Recorder::default();
-            tree.traverse()
-                .breadthfirst(&mut recorder)
-                .map_err(|source| failed("walking the tree")(Box::new(source)))?;
+            let mut collector = PathCollector {
+                limit,
+                ..Default::default()
+            };
+            let walked = tree.traverse().breadthfirst(&mut collector);
+            if let Some(error) = collector.refused {
+                return Err(error);
+            }
+            walked.map_err(|source| failed("walking the tree")(Box::new(source)))?;
 
-            Ok(recorder
-                .records
-                .into_iter()
-                .filter(|entry| entry.mode.is_blob())
-                .filter_map(|entry| RepoPath::new(&entry.filepath.to_str_lossy()).ok())
-                .take(limit)
-                .collect())
+            Ok(collector.paths)
         })
         .await
     }
@@ -557,6 +568,94 @@ impl Mirror {
                 })
         })
         .await
+    }
+}
+
+#[derive(Default)]
+struct TreeBudget {
+    entries: usize,
+    path_bytes: usize,
+}
+
+impl TreeBudget {
+    fn observe(&mut self, path_bytes: usize) -> Result<(), MirrorError> {
+        if self.entries >= MAX_TREE_ENTRIES {
+            return Err(MirrorError::TooManyTreeEntries {
+                limit: MAX_TREE_ENTRIES,
+            });
+        }
+        if path_bytes > MAX_TREE_PATH_BYTES - self.path_bytes {
+            return Err(MirrorError::TreePathsTooLarge);
+        }
+        self.entries += 1;
+        self.path_bytes += path_bytes;
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct PathCollector {
+    recorder: gix::traverse::tree::Recorder,
+    budget: TreeBudget,
+    paths: Vec<RepoPath>,
+    limit: usize,
+    refused: Option<MirrorError>,
+}
+
+impl PathCollector {
+    fn observe(&mut self, entry: &gix::objs::tree::EntryRef<'_>) -> Result<(), MirrorError> {
+        self.budget.observe(self.recorder.path().len())?;
+        if entry.mode.is_blob()
+            && let Ok(path) = RepoPath::new(&self.recorder.path().to_str_lossy())
+        {
+            if self.paths.len() >= self.limit {
+                return Err(MirrorError::TooManyPaths { limit: self.limit });
+            }
+            self.paths.push(path);
+        }
+        Ok(())
+    }
+}
+
+impl gix::traverse::tree::Visit for PathCollector {
+    fn pop_back_tracked_path_and_set_current(&mut self) {
+        self.recorder.pop_back_tracked_path_and_set_current();
+    }
+
+    fn pop_front_tracked_path_and_set_current(&mut self) {
+        self.recorder.pop_front_tracked_path_and_set_current();
+    }
+
+    fn push_back_tracked_path_component(&mut self, component: &BStr) {
+        self.recorder.push_back_tracked_path_component(component);
+    }
+
+    fn push_path_component(&mut self, component: &BStr) {
+        self.recorder.push_path_component(component);
+    }
+
+    fn pop_path_component(&mut self) {
+        self.recorder.pop_path_component();
+    }
+
+    fn visit_tree(
+        &mut self,
+        entry: &gix::objs::tree::EntryRef<'_>,
+    ) -> gix::traverse::tree::visit::Action {
+        self.visit_nontree(entry)
+    }
+
+    fn visit_nontree(
+        &mut self,
+        entry: &gix::objs::tree::EntryRef<'_>,
+    ) -> gix::traverse::tree::visit::Action {
+        match self.observe(entry) {
+            Ok(()) => ControlFlow::Continue(true),
+            Err(error) => {
+                self.refused = Some(error);
+                ControlFlow::Break(())
+            }
+        }
     }
 }
 
@@ -686,7 +785,7 @@ fn signature(role: PersonRole, name: &BStr, email: &BStr) -> Person {
 }
 
 fn trailer_person(role: PersonRole, value: &BStr) -> Person {
-    let (name, email) = crate::person::parse_identity(&value.to_str_lossy());
+    let (name, email) = crate::project::person::parse_identity(&value.to_str_lossy());
 
     Person {
         role,
