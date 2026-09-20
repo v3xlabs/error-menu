@@ -24,7 +24,7 @@ pub async fn consume(
     state_hash: &str,
     now: Timestamp,
 ) -> Result<bool, DatabaseError> {
-    let mut transaction = database.pool.begin().await?;
+    let mut transaction = database.write().await?;
     let expires_at_millis: Option<i64> =
         sqlx::query("SELECT expires_at_millis FROM auth_attempts WHERE state_hash = ?")
             .bind(state_hash)

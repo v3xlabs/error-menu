@@ -77,7 +77,7 @@ impl Project {
         validate_analyzers(analyzers)?;
 
         let id: Id<Project> = database.ids.next();
-        let mut transaction = database.pool.begin().await?;
+        let mut transaction = database.write().await?;
         sqlx::query(
             "INSERT INTO projects (id, name, remote_url, forge_kind, uses_default_analyzers) \
              VALUES (?, ?, ?, ?, ?)",
@@ -341,7 +341,7 @@ impl Project {
     ) -> Result<(), DatabaseError> {
         validate_analyzers(analyzers)?;
 
-        let mut transaction = database.pool.begin().await?;
+        let mut transaction = database.write().await?;
         sqlx::query("UPDATE projects SET uses_default_analyzers = ? WHERE id = ?")
             .bind(i64::from(uses_default_analyzers))
             .bind(self.id.raw())

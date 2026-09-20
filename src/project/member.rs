@@ -80,7 +80,7 @@ impl ProjectMember {
         user_id: Id<User>,
         role: ProjectRole,
     ) -> Result<ProjectMemberChange, DatabaseError> {
-        let mut transaction = database.pool.begin().await?;
+        let mut transaction = database.write().await?;
         let existing_role: Option<String> =
             sqlx::query("SELECT role FROM project_members WHERE project_id = ? AND user_id = ?")
                 .bind(project_id.raw())
@@ -154,7 +154,7 @@ impl ProjectMember {
         project_id: Id<Project>,
         user_id: Id<User>,
     ) -> Result<ProjectMemberChange, DatabaseError> {
-        let mut transaction = database.pool.begin().await?;
+        let mut transaction = database.write().await?;
         let role: Option<String> =
             sqlx::query("SELECT role FROM project_members WHERE project_id = ? AND user_id = ?")
                 .bind(project_id.raw())

@@ -5,10 +5,11 @@ pub mod avatar;
 pub mod icon;
 pub mod mcp;
 pub mod oauth;
+pub mod trace;
 
 use std::sync::Arc;
 
-use poem::{EndpointExt, Route, middleware::Tracing};
+use poem::{Endpoint, EndpointExt, Route};
 use poem_openapi::OpenApiService;
 
 use crate::app::AppState;
@@ -18,7 +19,10 @@ const TITLE: &str = "error.menu";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const MOUNT: &str = "/api";
 
-pub fn routes(state: Arc<AppState>, github_auth: Option<Arc<oauth::GithubAuth>>) -> Route {
+pub fn routes(
+    state: Arc<AppState>,
+    github_auth: Option<Arc<oauth::GithubAuth>>,
+) -> impl Endpoint<Output = poem::Response> {
     let service = OpenApiService::new(
         (
             health::HealthApi {
@@ -65,7 +69,7 @@ pub fn routes(state: Arc<AppState>, github_auth: Option<Arc<oauth::GithubAuth>>)
             "/projects/:project_id/blob",
             poem::get(icon::serve_blob).data(Arc::clone(&state)),
         )
-        .nest("/", service.with(Tracing));
+        .nest("/", service);
     let api_routes = Route::new().nest(
         "/",
         api_routes.with(auth::RequireSession::new(Arc::clone(&state))),
@@ -78,8 +82,10 @@ pub fn routes(state: Arc<AppState>, github_auth: Option<Arc<oauth::GithubAuth>>)
         )
         .at("/openapi.json", specification)
         .at("/*path", poem::get(assets::serve));
-    match github_auth {
+    let routes = match github_auth {
         Some(auth) => routes.nest("/auth", oauth::routes(auth)),
         None => routes,
-    }
+    };
+
+    routes.with(trace::RequestTrace)
 }

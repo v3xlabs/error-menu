@@ -13,6 +13,7 @@ use crate::user::token::ApiToken;
 use crate::user::{attempt, session};
 use crate::worker::discovery;
 use crate::worker::discovery::DiscoveryError;
+use tracing::Instrument;
 
 /// How long a claim holds a job before another worker may take it. It has to outlast the
 /// slowest honest run: a first clone of a large repository plus a walk of its open changes.
@@ -335,7 +336,13 @@ async fn tick(state: &AppState, worker: &str) -> Result<(), DatabaseError> {
 
     // One job at a time, because two runs of one project would fetch the same mirror
     while let Some(job) = Job::claim(&state.database, worker, LEASE).await? {
-        run(state, job).await?;
+        let span = tracing::info_span!(
+            "job",
+            trace = %crate::trace::new_id(),
+            job = %job.id,
+            project = %job.project_id,
+        );
+        run(state, job).instrument(span).await?;
     }
 
     Ok(())
@@ -349,8 +356,6 @@ async fn run(state: &AppState, job: Job) -> Result<(), DatabaseError> {
             Ok(discovery) => {
                 job.finish(&state.database).await?;
                 tracing::info!(
-                    job = %job.id,
-                    project = %job.project_id,
                     changes = discovery.changes.len(),
                     seconds = started.duration_until(Timestamp::now()).as_secs(),
                     "discovery finished"
@@ -360,8 +365,6 @@ async fn run(state: &AppState, job: Job) -> Result<(), DatabaseError> {
                 let message = format!("{host} has no request budget left until {reset}");
                 job.defer(&state.database, reset, &message).await?;
                 tracing::warn!(
-                    job = %job.id,
-                    project = %job.project_id,
                     %host,
                     %reset,
                     "discovery is waiting for the forge request budget"
@@ -374,8 +377,6 @@ async fn run(state: &AppState, job: Job) -> Result<(), DatabaseError> {
 
                 job.fail(&state.database, &message, retry_at).await?;
                 tracing::warn!(
-                    job = %job.id,
-                    project = %job.project_id,
                     attempts = job.attempts,
                     retrying = retry_at.is_some(),
                     "discovery failed: {message}"

@@ -140,6 +140,23 @@ fn github_failed(operation: &'static str) -> Response {
     clear_state_cookie(status(StatusCode::BAD_GATEWAY))
 }
 
+/// Sign-in writes, so it competes with the queue for SQLite's single writer. A refusal
+/// from that competition passes on its own, and the browser is told to come back instead
+/// of being shown a failure the reader cannot act on.
+fn storage_failed(operation: &'static str, error: &DatabaseError) -> Response {
+    log_database_error(operation, error);
+
+    let response = match error.is_contended() {
+        true => Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .header("retry-after", "2")
+            .finish(),
+        false => status(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+
+    clear_state_cookie(response)
+}
+
 fn signed_in(session: String) -> Response {
     clear_state_cookie(
         Response::builder()
@@ -164,9 +181,7 @@ async fn login(Data(auth): Data<&Arc<GithubAuth>>) -> Response {
     )
     .await
     {
-        log_database_error("create_auth_attempt", &error);
-
-        return status(StatusCode::INTERNAL_SERVER_ERROR);
+        return storage_failed("create_auth_attempt", &error);
     }
     let mut url = Url::parse("https://github.com/login/oauth/authorize").expect("valid GitHub URL");
     url.query_pairs_mut()
@@ -259,9 +274,7 @@ async fn callback(
     {
         Ok(user) => user,
         Err(error) => {
-            log_database_error("register_user", &error);
-
-            return clear_state_cookie(status(StatusCode::INTERNAL_SERVER_ERROR));
+            return storage_failed("register_user", &error);
         }
     }) else {
         return clear_state_cookie(status(StatusCode::FORBIDDEN));
@@ -276,9 +289,7 @@ async fn callback(
     )
     .await
     {
-        log_database_error("create_session", &error);
-
-        return clear_state_cookie(status(StatusCode::INTERNAL_SERVER_ERROR));
+        return storage_failed("create_session", &error);
     }
 
     signed_in(session)

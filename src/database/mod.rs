@@ -6,8 +6,8 @@ pub mod codec;
 use std::str::FromStr;
 use std::time::Duration;
 
-use sqlx::SqlitePool;
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
+use sqlx::{Sqlite, SqlitePool, Transaction};
 
 use crate::id::IdGenerator;
 
@@ -21,6 +21,11 @@ impl Database {
         let options = SqliteConnectOptions::from_str(url)?
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
+            // A write-ahead log already survives a process that dies, and every row here
+            // is either re-derivable or a credential a reader can make again, so waiting
+            // for the platter on each commit buys nothing and costs seconds on a network
+            // volume.
+            .synchronous(SqliteSynchronous::Normal)
             .busy_timeout(Duration::from_secs(10));
         let max_connections = if url == "sqlite::memory:" { 1 } else { 4 };
         let pool = SqlitePoolOptions::new()
@@ -33,6 +38,16 @@ impl Database {
             pool,
             ids: IdGenerator::new(node),
         })
+    }
+
+    /// A transaction that will write before it commits.
+    ///
+    /// Every one of ours reads and then writes. Started deferred, the write lock is taken
+    /// late, and SQLite answers a late upgrade with `SQLITE_BUSY` immediately instead of
+    /// waiting out `busy_timeout`, so a reader that arrives while the queue is writing is
+    /// refused rather than delayed. Claiming the writer up front makes the wait happen.
+    pub async fn write(&self) -> Result<Transaction<'static, Sqlite>, DatabaseError> {
+        Ok(self.pool.begin_with("BEGIN IMMEDIATE").await?)
     }
 }
 
@@ -64,5 +79,15 @@ impl DatabaseError {
         };
 
         error.code().map(|code| code.into_owned())
+    }
+
+    /// Whether the database refused because another writer held it. SQLite reports that
+    /// as `SQLITE_BUSY` or `SQLITE_LOCKED`, each also in extended forms that carry the
+    /// primary code in its low byte. It passes, so a caller may say "come back" rather
+    /// than "this is broken".
+    pub fn is_contended(&self) -> bool {
+        self.database_code()
+            .and_then(|code| code.parse::<i32>().ok())
+            .is_some_and(|code| matches!(code & 0xff, 5 | 6))
     }
 }

@@ -76,7 +76,7 @@ impl CheckRun {
         snapshot_id: Id<Snapshot>,
         check_runs: &[CheckRun],
     ) -> Result<(), DatabaseError> {
-        let mut transaction = database.pool.begin().await?;
+        let mut transaction = database.write().await?;
         sqlx::query("DELETE FROM check_runs WHERE snapshot_id = ?")
             .bind(snapshot_id.raw())
             .execute(&mut *transaction)

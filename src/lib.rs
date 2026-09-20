@@ -7,6 +7,7 @@ pub mod id;
 pub mod outbound;
 pub mod prelude;
 pub mod project;
+pub mod trace;
 pub mod user;
 pub mod vcs;
 pub mod worker;

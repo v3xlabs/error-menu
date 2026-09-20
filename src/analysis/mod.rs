@@ -83,7 +83,7 @@ impl Run {
         let (status_text, status_detail) = run.status.stored();
         let id: Id<Run> = database.ids.next();
 
-        let mut transaction = database.pool.begin().await?;
+        let mut transaction = database.write().await?;
         let project_id = project_of_snapshot(&mut transaction, run.snapshot_id).await?;
 
         sqlx::query(

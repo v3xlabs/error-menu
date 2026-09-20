@@ -79,7 +79,7 @@ impl User {
         allow_registration: bool,
     ) -> Result<Option<User>, DatabaseError> {
         let now = Timestamp::now();
-        let mut transaction = database.pool.begin().await?;
+        let mut transaction = database.write().await?;
         if let Some(row) = sqlx::query(
             "SELECT id, oidc_issuer, oidc_subject, display_name, access_role AS role, created_at, last_signed_in_at \
              FROM users WHERE oidc_issuer = ? AND oidc_subject = ?",
@@ -173,7 +173,7 @@ impl User {
         user_id: Id<User>,
         role: UserRole,
     ) -> Result<UserRoleChange, DatabaseError> {
-        let mut transaction = database.pool.begin().await?;
+        let mut transaction = database.write().await?;
         let current_role: Option<String> =
             sqlx::query("SELECT access_role FROM users WHERE id = ?")
                 .bind(user_id.raw())

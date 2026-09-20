@@ -35,7 +35,7 @@ impl Snapshot {
     ) -> Result<Snapshot, DatabaseError> {
         let id: Id<Snapshot> = database.ids.next();
         let observed_at = Timestamp::now();
-        let mut transaction = database.pool.begin().await?;
+        let mut transaction = database.write().await?;
 
         sqlx::query(
             "INSERT INTO snapshots \
@@ -174,7 +174,7 @@ impl Snapshot {
         {
             return Ok(snapshot);
         }
-        let mut transaction = database.pool.begin().await?;
+        let mut transaction = database.write().await?;
         sqlx::query(
             "UPDATE snapshots SET base = ?, forge_title = ?, forge_body = ?, forge_author = ?, \
              forge_url = ?, forge_base_ref = ?, forge_head_ref = ?, forge_state = ?, forge_merge_commit = ?, \
