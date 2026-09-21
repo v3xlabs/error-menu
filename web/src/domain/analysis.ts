@@ -135,11 +135,6 @@ const SEVERITY_TONES: Record<string, StatusTone> = {
   info: "clear",
 };
 
-// The colour a count should carry: the worst severity among the findings behind it, so a
-// row of 300 lockfile notes does not read like a row with one leaked credential.
-export const worstFindingTone = (analysis: Analysis): StatusTone =>
-  worstTone(findingsOf(analysis).map(finding => SEVERITY_TONES[finding.severity] ?? "clear")) ?? "clear";
-
 export type ForgeKind = "github" | "gitlab" | "gitea" | "forgejo";
 
 // Which forge a person belongs to, when that is knowable. A login comes from the forge API

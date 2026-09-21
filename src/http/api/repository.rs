@@ -18,6 +18,11 @@ pub struct RepositoryApi {
     pub state: Arc<AppState>,
 }
 
+/// Enough history to see the shape of recent work without turning a project page into a
+/// commit log. Every commit read costs one object load out of the mirror.
+const DEFAULT_COMMITS: u8 = 10;
+const MAX_COMMITS: u8 = 50;
+
 #[OpenApi]
 impl RepositoryApi {
     /// One directory of the repository at the default branch, for browsing it. Directories
@@ -74,6 +79,66 @@ impl RepositoryApi {
                 entries: entries.into_iter().map(entry_output).collect(),
             })),
             Err(error) => TreeResponse::Failed(Json(Error {
+                message: error.to_string(),
+            })),
+        }
+    }
+
+    /// The default branch's own history, newest first, read from the mirror. A forge is
+    /// never asked for this: git already carries it, and a reader who opens a project
+    /// wants to see what landed before they read what it means.
+    #[oai(path = "/projects/:project_id/commits", method = "get")]
+    async fn project_commits(
+        &self,
+        CurrentUser(user): CurrentUser,
+        project_id: Path<String>,
+        limit: poem_openapi::param::Query<Option<u8>>,
+    ) -> CommitsResponse {
+        let project_id = match project_id.0.parse::<Id<Project>>() {
+            Ok(project_id) => project_id,
+            Err(error) => {
+                return CommitsResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
+        };
+        let project =
+            match project_access(&self.state, &user, project_id, ProjectPermission::Viewer).await {
+                ProjectAccess::Allowed { project, .. } => project,
+                ProjectAccess::Forbidden => return CommitsResponse::Forbidden(Json(forbidden())),
+                ProjectAccess::Missing => return CommitsResponse::Missing(Json(missing_project())),
+                ProjectAccess::Failed(message) => {
+                    return CommitsResponse::Failed(Json(Error { message }));
+                }
+            };
+        let head = match Snapshot::default_branch_head(&self.state.database, project_id).await {
+            Ok(Some(head)) => head,
+            Ok(None) => {
+                return CommitsResponse::Missing(Json(Error {
+                    message: "run discovery first, so the default branch is known".to_owned(),
+                }));
+            }
+            Err(error) => {
+                return CommitsResponse::Failed(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
+        };
+        let mirror = match Mirror::open(&self.state.mirrors, &project.remote).await {
+            Ok(mirror) => mirror,
+            Err(error) => {
+                return CommitsResponse::Failed(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
+        };
+        let limit = usize::from(limit.0.unwrap_or(DEFAULT_COMMITS).clamp(1, MAX_COMMITS));
+
+        match mirror.log(&head, limit).await {
+            Ok(commits) => CommitsResponse::Found(Json(CommitsOutput {
+                commits: commits.into_iter().map(commit_output).collect(),
+            })),
+            Err(error) => CommitsResponse::Failed(Json(Error {
                 message: error.to_string(),
             })),
         }
@@ -221,6 +286,41 @@ enum TreeResponse {
     Failed(Json<Error>),
 }
 
+/// One commit of the default branch. `summary` is the first line of the commit message,
+/// and every field here is written by whoever made the commit, so it is a claim rather
+/// than a verified fact.
+#[derive(Debug, Object)]
+#[oai(skip_serializing_if_is_none)]
+struct CommitOutput {
+    sha: String,
+    summary: String,
+    author: Option<String>,
+    authored_at: String,
+}
+
+#[derive(Debug, Object)]
+#[oai(skip_serializing_if_is_none)]
+struct CommitsOutput {
+    commits: Vec<CommitOutput>,
+}
+
+#[allow(dead_code)]
+#[derive(ApiResponse)]
+enum CommitsResponse {
+    #[oai(status = 200)]
+    Found(Json<CommitsOutput>),
+    #[oai(status = 400)]
+    Invalid(Json<Error>),
+    #[oai(status = 401)]
+    Unauthenticated(Json<Error>),
+    #[oai(status = 403)]
+    Forbidden(Json<Error>),
+    #[oai(status = 404)]
+    Missing(Json<Error>),
+    #[oai(status = 500)]
+    Failed(Json<Error>),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
 #[oai(rename_all = "snake_case")]
 enum SchemeOutput {
@@ -275,6 +375,15 @@ fn entry_output(entry: crate::vcs::mirror::TreeEntry) -> TreeEntryOutput {
         name: entry.name,
         path: entry.path.as_str().to_owned(),
         is_directory: entry.is_directory,
+    }
+}
+
+fn commit_output(commit: crate::vcs::mirror::LoggedCommit) -> CommitOutput {
+    CommitOutput {
+        sha: commit.sha.to_string(),
+        summary: commit.summary,
+        author: commit.author,
+        authored_at: commit.authored_at.to_string(),
     }
 }
 

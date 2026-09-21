@@ -14,6 +14,14 @@ export const TONE_TINT: Record<StatusTone, string> = {
   unscanned: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300",
 };
 
+export const TONE_STROKE: Record<StatusTone, string> = {
+  alarming: "stroke-red-500",
+  attention: "stroke-amber-500",
+  clear: "stroke-emerald-500",
+  running: "stroke-sky-500",
+  unscanned: "stroke-slate-300 dark:stroke-slate-600",
+};
+
 const TONE_PILL: Record<StatusTone, string> = {
   alarming: `${PILL} ${TONE_TINT.alarming}`,
   attention: `${PILL} ${TONE_TINT.attention}`,
