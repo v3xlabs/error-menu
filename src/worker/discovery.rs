@@ -44,14 +44,12 @@ pub async fn run(state: &AppState, project_id: Id<Project>) -> Result<Discovery,
     let project = Project::load(&state.database, project_id)
         .await?
         .ok_or(DiscoveryError::ProjectNotFound)?;
-    let discovered = state
-        .forge
-        .discover(&project.remote, project.forge_kind)
-        .await?;
-    let mut mirror = None;
-    let default_head = discovered.default_branch.head;
+    let mirror = Mirror::open(&state.mirrors, &project.remote).await?;
+    let mut fetched = false;
+    let default = mirror.default_branch().await?;
+    let default_head = default.head;
     let default_head_for_icon = default_head.clone();
-    let default_name = discovered.default_branch.name;
+    let default_name = default.name;
     let indexed = Snapshot::indexed(&state.database, project.id, &default_head).await?;
     let analysis = match indexed {
         Some(indexed) => {
@@ -75,7 +73,7 @@ pub async fn run(state: &AppState, project_id: Id<Project>) -> Result<Discovery,
             Analysis::for_snapshot(&state.database, snapshot).await?
         }
         None => {
-            let mirror = mirror_for_analysis(&mut mirror, state, &project).await?;
+            let mirror = with_objects(&mirror, &mut fetched).await?;
             let default_base = mirror
                 .first_parent(&default_head)
                 .await?
@@ -107,15 +105,17 @@ pub async fn run(state: &AppState, project_id: Id<Project>) -> Result<Discovery,
         analysis,
     };
 
-    let mut changes = Vec::with_capacity(discovered.changes.len());
-    for change in discovered.changes {
-        changes.push(read_change(state, &project, &mut mirror, change).await?);
+    let discovered = state
+        .forge
+        .changes(&project.remote, project.forge_kind)
+        .await?;
+    let mut changes = Vec::with_capacity(discovered.len());
+    for change in discovered {
+        changes.push(read_change(state, &project, &mirror, &mut fetched, change).await?);
     }
-    if project.icon == ProjectIcon::default()
-        && let Some(mirror) = mirror.as_ref()
-    {
+    if project.icon == ProjectIcon::default() && fetched {
         let icon =
-            crate::project::icon::infer(mirror, &default_head_for_icon, &project.name).await?;
+            crate::project::icon::infer(&mirror, &default_head_for_icon, &project.name).await?;
         project
             .describe(&state.database, project.description.as_deref(), &icon)
             .await?;
@@ -127,30 +127,31 @@ pub async fn run(state: &AppState, project_id: Id<Project>) -> Result<Discovery,
     })
 }
 
-async fn mirror_for_analysis<'a>(
-    mirror: &'a mut Option<Mirror>,
-    state: &AppState,
-    project: &Project,
+/// The mirror with the remote's objects in it. A poll that finds every head already
+/// analysed reads no object at all, so the pack is received at most once in a pass, and
+/// only once something has to be read out of it.
+async fn with_objects<'a>(
+    mirror: &'a Mirror,
+    fetched: &mut bool,
 ) -> Result<&'a Mirror, MirrorError> {
-    match mirror {
-        Some(mirror) => Ok(mirror),
-        None => {
-            let opened = Mirror::open(&state.mirrors, &project.remote).await?;
-            opened.fetch().await?;
-            Ok(mirror.insert(opened))
-        }
+    if !*fetched {
+        mirror.fetch().await?;
+        *fetched = true;
     }
+
+    Ok(mirror)
 }
 
 async fn read_change(
     state: &AppState,
     project: &Project,
-    mirror: &mut Option<Mirror>,
+    mirror: &Mirror,
+    fetched: &mut bool,
     change: DiscoveredChange,
 ) -> Result<ChangeAnalysis, DiscoveryError> {
     let indexed = Snapshot::indexed(&state.database, project.id, &change.head).await?;
     if change.metadata.state == Some(ChangeState::Open) && indexed.is_none() {
-        let mirror = mirror_for_analysis(mirror, state, project).await?;
+        let mirror = with_objects(mirror, fetched).await?;
         return analyse_change(state, project, mirror, change).await;
     }
 

@@ -43,6 +43,8 @@ pub enum MirrorError {
     Io(#[from] std::io::Error),
     #[error("the work to read the mirror did not finish: {0}")]
     Interrupted(#[from] tokio::task::JoinError),
+    #[error("the remote advertises no usable default branch")]
+    NoDefaultBranch,
     #[error("{path} is {size} bytes at that revision, over the {MAX_BLOB_BYTES} byte limit")]
     TooLarge { path: String, size: u64 },
     #[error("{path} is not text at that revision")]
@@ -88,6 +90,14 @@ pub enum FileChange {
     Added,
     Modified,
     Deleted,
+}
+
+/// What git alone knows about a repository's main line: the branch the remote advertises
+/// as `HEAD`, and the commit it points at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefaultBranch {
+    pub name: String,
+    pub head: CommitSha,
 }
 
 impl Mirror {
@@ -156,6 +166,70 @@ impl Mirror {
                 .receive(gix::progress::Discard, &deadline)
                 .map_err(|source| failed("fetching")(Box::new(source)))?;
             Ok(())
+        })
+        .await
+    }
+
+    /// The branch the remote calls its own default, and the commit it points at, taken
+    /// from the ref advertisement every connection begins with. The connection is dropped
+    /// before a pack is negotiated, so this costs one round trip and no objects: a poll
+    /// that finds a head it has already analysed never pays for the rest.
+    pub async fn default_branch(&self) -> Result<DefaultBranch, MirrorError> {
+        let repository = self.repository.clone();
+
+        blocking(move || {
+            // A connection asks only for the ref prefixes its refspecs need, and the
+            // mirror's fetch every branch. `HEAD` is not under any of them, so without
+            // naming it the one ref this reads is the one the remote leaves out.
+            let head =
+                gix::refspec::parse(b"HEAD".as_bstr(), gix::refspec::parse::Operation::Fetch)
+                    .map_err(|source| failed("reading the HEAD refspec")(Box::new(source)))?
+                    .into();
+            let repository = repository.to_thread_local();
+            let listed = repository
+                .find_remote("origin")
+                .map_err(|source| failed("finding the origin remote")(Box::new(source)))?
+                .connect(gix::remote::Direction::Fetch)
+                .map_err(|source| failed("connecting to the remote")(Box::new(source)))?
+                .prepare_fetch(
+                    gix::progress::Discard,
+                    gix::remote::ref_map::Options {
+                        extra_refspecs: vec![head],
+                        ..Default::default()
+                    },
+                )
+                .map_err(|source| failed("listing the remote refs")(Box::new(source)))?;
+
+            let advertised =
+                listed
+                    .ref_map()
+                    .remote_refs
+                    .iter()
+                    .find_map(|advertised| match advertised {
+                        gix::protocol::handshake::Ref::Symbolic {
+                            full_ref_name,
+                            target,
+                            object,
+                            ..
+                        } if full_ref_name.as_slice() == b"HEAD".as_slice() => {
+                            Some((target, object))
+                        }
+                        _ => None,
+                    });
+            let Some((target, object)) = advertised else {
+                return Err(MirrorError::NoDefaultBranch);
+            };
+            let Some(name) = target.strip_prefix(b"refs/heads/".as_slice()) else {
+                return Err(MirrorError::NoDefaultBranch);
+            };
+            let name = name.to_str().map_err(|_| MirrorError::NoDefaultBranch)?;
+
+            Ok(DefaultBranch {
+                name: name.to_owned(),
+                head: CommitSha::new(&object.to_hex().to_string()).map_err(|source| {
+                    failed("reading the default branch head")(Box::new(source))
+                })?,
+            })
         })
         .await
     }

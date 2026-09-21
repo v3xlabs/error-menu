@@ -50,17 +50,27 @@ its results are lost. A table is also inspectable, which matters at three in the
 A poll finds the same commits nearly every time. Analysis is keyed by project and head in
 `commit_analyses`, so a head that has been analysed is never analysed again: the sighting is
 recorded, its snapshot points at the analysed one through `analysis_snapshot_id`, and the
-reader sees the stored runs. Only a head nobody has analysed opens the mirror. Forge metadata,
+reader sees the stored runs. Only a head nobody has analysed receives a pack. Forge metadata,
 review state and CI status still refresh on every poll, because those change without a commit.
+
+Anything git publishes is read from git. The default branch and its head come from the ref
+advertisement that opens every connection to the remote, which costs one round trip, no
+objects, and nothing from the forge's request budget. The forge is asked for one thing: the
+changes open on top of the repository, with the titles, people and state that exist nowhere
+in it. A poll therefore spends one forge request on the change list, plus one for each commit
+whose signature is read and one for each head whose CI status is read.
 
 ## Forge credentials and budgets
 
-`FORGE_TOKENS` holds `host=token` pairs separated by commas. A token is sent to its own host
-and to no other, because the remote of a project is chosen by whoever created it. A host
-without an entry is read anonymously, which on github.com is sixty requests an hour for the
-whole source address. An exhausted budget is not a failure: the forge says when it resets, the
-job waits until then, and the attempt is given back. A refusal without a budget header is a
-failure, and it retries and then stops.
+`FORGE_TOKENS` holds `host=token` pairs separated by commas. The host is the one the API
+answers on, not the one the repository is cloned from: a public GitHub repository is read
+through `api.github.com`, while GitHub Enterprise, GitLab, Gitea and Forgejo answer under the
+repository host itself. A token is sent to its own host and to no other, because the remote of
+a project is chosen by whoever created it. A host without an entry is read anonymously, which
+on `api.github.com` is sixty requests an hour for the whole source address. An exhausted
+budget is not a failure: the forge says when it resets, the job waits until then, and the
+attempt is given back. A refusal without a budget header is a failure, and it retries and
+then stops.
 
 ## Authentication reads
 

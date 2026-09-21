@@ -4,16 +4,17 @@ use jiff::Timestamp;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use super::{
-    ChangeState, CommitReading, DiscoveredBranch, DiscoveredChange, DiscoveredProject,
-    ForgeAccount, ForgeKind, ForgeMetadata,
-};
+use super::{ChangeState, CommitReading, DiscoveredChange, ForgeAccount, ForgeKind, ForgeMetadata};
 use crate::analysis::ci_checks::{CheckConclusion, CheckRun, CheckStatus};
 use crate::prelude::*;
 use crate::vcs::CommitShaError;
 
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const PAGE_SIZE: &str = "100";
+
+/// The public GitHub REST API answers on this host, so a credential for it is keyed here
+/// and not under the host a repository is cloned from.
+const GITHUB_API_HOST: &str = "api.github.com";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ForgeReadError {
@@ -44,9 +45,38 @@ pub enum ForgeReadError {
 #[derive(Clone)]
 pub struct ForgeReader {
     client: reqwest::Client,
-    /// One token per host. A credential for one forge must never travel to another,
+    /// One credential per host. A credential for one forge must never travel to another,
     /// because a project's remote is chosen by whoever created the project.
-    credentials: BTreeMap<String, String>,
+    credentials: BTreeMap<String, Credential>,
+}
+
+/// How a forge is told who is asking.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Credential {
+    /// A token an account issued, carrying that account's reach.
+    Token(String),
+    /// An OAuth app's own client id and secret. GitHub serves public data for these and
+    /// charges the app's budget rather than a person's, and they authorise nothing a
+    /// signed-out reader cannot already see.
+    ClientApp { id: String, secret: String },
+}
+
+impl Credential {
+    fn apply(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self {
+            Self::Token(token) => request.bearer_auth(token),
+            Self::ClientApp { id, secret } => request.basic_auth(id, Some(secret)),
+        }
+    }
+
+    /// Names the mechanism without naming the secret, so a misconfigured host is visible
+    /// in a log line rather than in a budget that runs out an hour later.
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Token(_) => "token",
+            Self::ClientApp { .. } => "client app",
+        }
+    }
 }
 
 struct Repository {
@@ -57,9 +87,27 @@ struct Repository {
 }
 
 impl ForgeReader {
-    /// `FORGE_TOKENS` holds `host=token` pairs separated by commas. Without an entry for
-    /// a host, requests to it stay anonymous and share that host's anonymous budget.
+    /// `FORGE_TOKENS` holds `host=token` pairs separated by commas. Public GitHub also
+    /// answers the OAuth app that signs users in: reads of public data made with its client
+    /// id and secret cost the app's budget of five thousand an hour instead of the sixty a
+    /// source address gets anonymously, and they ask for no permission over anyone's
+    /// account. An explicit token for a host wins over it. Without either, requests to a
+    /// host stay anonymous and share that host's anonymous budget.
     pub fn new() -> Result<Self, ForgeReadError> {
+        let mut credentials = credentials(std::env::var("FORGE_TOKENS").as_deref().unwrap_or(""));
+        let client_app = std::env::var("GITHUB_CLIENT_ID")
+            .ok()
+            .zip(std::env::var("GITHUB_CLIENT_SECRET").ok())
+            .filter(|(id, secret)| !id.is_empty() && !secret.is_empty());
+        if let Some((id, secret)) = client_app {
+            credentials
+                .entry(GITHUB_API_HOST.to_owned())
+                .or_insert(Credential::ClientApp { id, secret });
+        }
+        for (host, credential) in &credentials {
+            tracing::info!(%host, credential = credential.kind(), "forge reads are authenticated");
+        }
+
         Ok(Self {
             client: reqwest::Client::builder()
                 .https_only(true)
@@ -67,15 +115,18 @@ impl ForgeReader {
                 .timeout(std::time::Duration::from_secs(15))
                 .user_agent(concat!("error.menu/", env!("CARGO_PKG_VERSION")))
                 .build()?,
-            credentials: credentials(std::env::var("FORGE_TOKENS").as_deref().unwrap_or("")),
+            credentials,
         })
     }
 
-    pub async fn discover(
+    /// The changes a forge keeps on top of git: their numbers, their heads, and the state,
+    /// titles and people that live nowhere in the repository. What git itself answers, the
+    /// mirror answers, and this never asks for it.
+    pub async fn changes(
         &self,
         remote: &RemoteUrl,
         configured_kind: ForgeKind,
-    ) -> Result<DiscoveredProject, ForgeReadError> {
+    ) -> Result<Vec<DiscoveredChange>, ForgeReadError> {
         let repository = Repository::from_remote(remote, configured_kind)?;
 
         match repository.kind {
@@ -245,11 +296,10 @@ impl ForgeReader {
             .collect())
     }
 
-    async fn github(&self, repository: &Repository) -> Result<DiscoveredProject, ForgeReadError> {
-        let project: GithubProject = self.get(repository.repository_url("repos", &[])).await?;
-        let branch: GithubBranch = self
-            .get(repository.repository_url("repos", &["branches", &project.default_branch]))
-            .await?;
+    async fn github(
+        &self,
+        repository: &Repository,
+    ) -> Result<Vec<DiscoveredChange>, ForgeReadError> {
         let pulls: Vec<GithubPull> = self
             .get_with_query(
                 repository.repository_url("repos", &["pulls"]),
@@ -262,35 +312,18 @@ impl ForgeReader {
             )
             .await?;
 
-        Ok(DiscoveredProject {
-            default_branch: DiscoveredBranch {
-                name: project.default_branch,
-                head: sha("default branch", &branch.commit.sha)?,
-            },
-            changes: pulls
-                .into_iter()
-                .map(TryInto::try_into)
-                .collect::<Result<_, _>>()?,
-        })
+        pulls.into_iter().map(TryInto::try_into).collect()
     }
 
-    async fn gitlab(&self, repository: &Repository) -> Result<DiscoveredProject, ForgeReadError> {
-        let project: GitlabProject = self
-            .get(repository.endpoint(&["projects", &repository.project_path()]))
-            .await?;
-        let project_id = project.id.to_string();
-        let branch: GitlabBranch = self
-            .get(repository.endpoint(&[
-                "projects",
-                &project_id,
-                "repository",
-                "branches",
-                &project.default_branch,
-            ]))
-            .await?;
+    /// GitLab names a project by its id or by its path encoded as one segment, so the
+    /// numeric id it would cost a request to learn is never needed here.
+    async fn gitlab(
+        &self,
+        repository: &Repository,
+    ) -> Result<Vec<DiscoveredChange>, ForgeReadError> {
         let changes: Vec<GitlabChange> = self
             .get_with_query(
-                repository.endpoint(&["projects", &project_id, "merge_requests"]),
+                repository.endpoint(&["projects", &repository.project_path(), "merge_requests"]),
                 &[
                     ("scope", "all"),
                     ("order_by", "updated_at"),
@@ -300,23 +333,13 @@ impl ForgeReader {
             )
             .await?;
 
-        Ok(DiscoveredProject {
-            default_branch: DiscoveredBranch {
-                name: project.default_branch,
-                head: sha("default branch", &branch.commit.id)?,
-            },
-            changes: changes
-                .into_iter()
-                .map(TryInto::try_into)
-                .collect::<Result<_, _>>()?,
-        })
+        changes.into_iter().map(TryInto::try_into).collect()
     }
 
-    async fn gitea(&self, repository: &Repository) -> Result<DiscoveredProject, ForgeReadError> {
-        let project: GiteaProject = self.get(repository.repository_url("repos", &[])).await?;
-        let branch: GiteaBranch = self
-            .get(repository.repository_url("repos", &["branches", &project.default_branch]))
-            .await?;
+    async fn gitea(
+        &self,
+        repository: &Repository,
+    ) -> Result<Vec<DiscoveredChange>, ForgeReadError> {
         let changes: Vec<GiteaChange> = self
             .get_with_query(
                 repository.repository_url("repos", &["pulls"]),
@@ -328,16 +351,17 @@ impl ForgeReader {
             )
             .await?;
 
-        Ok(DiscoveredProject {
-            default_branch: DiscoveredBranch {
-                name: project.default_branch,
-                head: sha("default branch", &branch.commit.id)?,
-            },
-            changes: changes
-                .into_iter()
-                .map(TryInto::try_into)
-                .collect::<Result<_, _>>()?,
-        })
+        changes.into_iter().map(TryInto::try_into).collect()
+    }
+
+    /// A request carrying the credential its host is owed, if any.
+    fn authorised(&self, host: &str, url: reqwest::Url) -> reqwest::RequestBuilder {
+        let request = self.client.get(url);
+
+        match self.credentials.get(host) {
+            Some(credential) => credential.apply(request),
+            None => request,
+        }
     }
 
     async fn get<Value: DeserializeOwned>(
@@ -345,11 +369,7 @@ impl ForgeReader {
         url: reqwest::Url,
     ) -> Result<Value, ForgeReadError> {
         let host = url.host_str().unwrap_or_default().to_owned();
-        let mut request = self.client.get(url);
-        if let Some(token) = self.credentials.get(&host) {
-            request = request.bearer_auth(token);
-        }
-        let response = request.send().await?;
+        let response = self.authorised(&host, url).send().await?;
         let status = response.status();
         if status.is_client_error() {
             return Err(refusal(host, &response, status.as_u16()));
@@ -495,12 +515,13 @@ fn refusal(host: String, response: &reqwest::Response, status: u16) -> ForgeRead
     }
 }
 
-fn credentials(configured: &str) -> BTreeMap<String, String> {
+fn credentials(configured: &str) -> BTreeMap<String, Credential> {
     configured
         .split(',')
         .filter_map(|entry| entry.split_once('='))
         .map(|(host, token)| (host.trim().to_owned(), token.trim().to_owned()))
         .filter(|(host, token)| !host.is_empty() && !token.is_empty())
+        .map(|(host, token)| (host, Credential::Token(token)))
         .collect()
 }
 
@@ -655,21 +676,6 @@ fn check_conclusion(value: &str) -> Option<CheckConclusion> {
 }
 
 #[derive(Deserialize)]
-struct GithubProject {
-    default_branch: String,
-}
-
-#[derive(Deserialize)]
-struct GithubBranch {
-    commit: GithubCommit,
-}
-
-#[derive(Deserialize)]
-struct GithubCommit {
-    sha: String,
-}
-
-#[derive(Deserialize)]
 struct GithubPull {
     number: u64,
     html_url: String,
@@ -753,17 +759,6 @@ impl TryFrom<GithubPull> for DiscoveredChange {
 #[derive(Deserialize)]
 struct GitlabProject {
     id: u64,
-    default_branch: String,
-}
-
-#[derive(Deserialize)]
-struct GitlabBranch {
-    commit: GitlabCommit,
-}
-
-#[derive(Deserialize)]
-struct GitlabCommit {
-    id: String,
 }
 
 #[derive(Deserialize)]
@@ -843,21 +838,6 @@ impl TryFrom<GitlabChange> for DiscoveredChange {
             },
         })
     }
-}
-
-#[derive(Deserialize)]
-struct GiteaProject {
-    default_branch: String,
-}
-
-#[derive(Deserialize)]
-struct GiteaBranch {
-    commit: GiteaCommit,
-}
-
-#[derive(Deserialize)]
-struct GiteaCommit {
-    id: String,
 }
 
 #[derive(Deserialize)]
@@ -1054,14 +1034,49 @@ mod tests {
         let configured = credentials(" github.com = token-one , forge.example = token-two ,=x, y=");
 
         assert_eq!(
-            configured.get("github.com").map(String::as_str),
-            Some("token-one")
+            configured.get("github.com"),
+            Some(&Credential::Token("token-one".to_owned()))
         );
         assert_eq!(
-            configured.get("forge.example").map(String::as_str),
-            Some("token-two")
+            configured.get("forge.example"),
+            Some(&Credential::Token("token-two".to_owned()))
         );
         assert_eq!(configured.len(), 2);
+    }
+
+    #[test]
+    fn public_github_reads_carry_the_oauth_app_and_no_account() {
+        let reader = ForgeReader {
+            client: reqwest::Client::new(),
+            credentials: BTreeMap::from([(
+                GITHUB_API_HOST.to_owned(),
+                Credential::ClientApp {
+                    id: "app-id".to_owned(),
+                    secret: "app-secret".to_owned(),
+                },
+            )]),
+        };
+
+        let authorised = reader
+            .authorised(
+                GITHUB_API_HOST,
+                reqwest::Url::parse("https://api.github.com/repos/o/r").unwrap(),
+            )
+            .build()
+            .unwrap();
+        assert_eq!(
+            authorised.headers().get("authorization").unwrap(),
+            "Basic YXBwLWlkOmFwcC1zZWNyZXQ="
+        );
+
+        let elsewhere = reader
+            .authorised(
+                "github.com",
+                reqwest::Url::parse("https://github.com/o/r").unwrap(),
+            )
+            .build()
+            .unwrap();
+        assert!(elsewhere.headers().get("authorization").is_none());
     }
 
     #[test]

@@ -105,18 +105,6 @@ pub struct CommitReading {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiscoveredProject {
-    pub default_branch: DiscoveredBranch,
-    pub changes: Vec<DiscoveredChange>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiscoveredBranch {
-    pub name: String,
-    pub head: CommitSha,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredChange {
     pub number: u64,
     pub fetch_ref: String,
