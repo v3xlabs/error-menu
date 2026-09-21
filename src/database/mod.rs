@@ -26,6 +26,13 @@ impl Database {
             // for the platter on each commit buys nothing and costs seconds on a network
             // volume.
             .synchronous(SqliteSynchronous::Normal)
+            // SQLite asks the filesystem for a temp directory when a sorter or a temp
+            // b-tree outgrows its cache, and answers `SQLITE_IOERR_GETTEMPPATH` when no
+            // candidate in `SQLITE_TMPDIR`, `TMPDIR`, `/var/tmp`, `/usr/tmp`, `/tmp`, `.`
+            // is writable. The container has a read-only root filesystem and `/` for a
+            // working directory, so none of them are, and only the writable volume holding
+            // this file is. Sorting in memory needs no such directory.
+            .pragma("temp_store", "MEMORY")
             .busy_timeout(Duration::from_secs(10));
         let max_connections = if url == "sqlite::memory:" { 1 } else { 4 };
         let pool = SqlitePoolOptions::new()
