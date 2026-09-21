@@ -11,7 +11,7 @@ const TONE_STYLES: Record<StatusTone, string> = {
 const TONE_LABELS: Record<StatusTone, string> = {
   alarming: "Alarming",
   attention: "Needs attention",
-  clear: "Clear",
+  clear: "Nothing to flag",
   running: "Running",
   unscanned: "Not scanned",
 };

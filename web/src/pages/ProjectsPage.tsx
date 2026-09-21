@@ -1,30 +1,18 @@
 import type { JSX } from "@solidjs/web";
-import { VsQuestion } from "solid-icons/vs";
 import { createEffect, createSignal, For, Show } from "solid-js";
 
 import type { Project } from "../api/projects";
 import { listProjects } from "../api/projects";
 import { useAccount } from "../app/account";
 import { AddProjectModal } from "../components/AddProjectModal";
-import { Gauge } from "../components/Gauge";
+import { AnalyzerRing } from "../components/AnalyzerRing";
 import { ProjectMark } from "../components/ProjectMark";
-import { analyzerByRunId } from "../domain/analyzer";
 
 type ProjectsState
   = | { phase: "loading"; }
     | { phase: "anonymous"; }
     | { phase: "loaded"; projects: readonly Project[]; }
     | { phase: "error"; message: string; };
-
-// An analyzer the client does not know yet still gets a gauge, because the backend owns the
-// list and can ship one before this build does.
-const analyzerIcon = (runId: string): JSX.Element => {
-  const analyzer = analyzerByRunId(runId);
-
-  return analyzer === undefined ? <VsQuestion size={12} /> : <analyzer.icon size={12} />;
-};
-
-const analyzerLabel = (runId: string): string => analyzerByRunId(runId)?.label ?? runId;
 
 const renderProjects = (state: ProjectsState): JSX.Element => {
   switch (state.phase) {
@@ -54,20 +42,7 @@ const renderProjects = (state: ProjectsState): JSX.Element => {
                       when={project.default_branch}
                       fallback={<span class="text-xs text-slate-500 dark:text-slate-500">No default-branch scan</span>}
                     >
-                      {analysis => (
-                        <span class="flex shrink-0 items-center gap-1.5">
-                          <For each={analysis().analyzers} fallback={<span class="text-xs text-slate-500 dark:text-slate-500">No default-branch scan</span>}>
-                            {analyzer => (
-                              <Gauge
-                                tone={analyzer.tone}
-                                icon={analyzerIcon(analyzer.analyzer)}
-                                value={analyzer.finding_count}
-                                label={`${analyzerLabel(analyzer.analyzer)}: ${analyzer.tone}, ${analyzer.finding_count} ${analyzer.finding_count === 1 ? "finding" : "findings"}`}
-                              />
-                            )}
-                          </For>
-                        </span>
-                      )}
+                      {analysis => <AnalyzerRing entries={analysis().analyzers} />}
                     </Show>
                   </a>
                 </li>

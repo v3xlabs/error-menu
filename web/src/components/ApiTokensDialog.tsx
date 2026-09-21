@@ -22,8 +22,7 @@ const dateFormatter = new Intl.DateTimeFormat(undefined, {
   timeStyle: "short",
 });
 
-export const ApiTokensDialog = () => {
-  const [isOpen, setIsOpen] = createSignal(false);
+export const ApiTokensDialog = (properties: { open: boolean; onOpenChange: (isOpen: boolean) => void; }) => {
   const [tokensState, setTokensState] = createSignal<TokensState>({ phase: "idle" });
   const [writeState, setWriteState] = createSignal<WriteState>({ phase: "ready" });
   const [name, setName] = createSignal("");
@@ -73,7 +72,7 @@ export const ApiTokensDialog = () => {
   };
 
   const handleOpenChange = (isNowOpen: boolean): void => {
-    setIsOpen(isNowOpen);
+    properties.onOpenChange(isNowOpen);
 
     if (isNowOpen) {
       void loadTokens();
@@ -161,10 +160,7 @@ export const ApiTokensDialog = () => {
   };
 
   return (
-    <Dialog open={isOpen()} onOpenChange={handleOpenChange}>
-      <Dialog.Trigger class="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
-        API tokens
-      </Dialog.Trigger>
+    <Dialog open={properties.open} onOpenChange={handleOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay class="fixed inset-0 z-40 bg-slate-950/40" />
         <div class="fixed inset-0 z-50 flex items-center justify-center p-4">

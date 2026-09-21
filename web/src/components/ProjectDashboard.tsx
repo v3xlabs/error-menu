@@ -5,7 +5,7 @@ import type { JSX } from "@solidjs/web";
 import { FiCheck, FiChevronDown } from "solid-icons/fi";
 import { createMemo, createSignal, For, Show } from "solid-js";
 
-import type { Analysis } from "../api/projects";
+import type { Analysis, Commit } from "../api/projects";
 import type { ForgeKind, StatusTone } from "../domain/analysis";
 import { analysisTone, byReviewOrder, findingsOf, latestPerSubject, scanned, subjectLabel, subjectPath, worstTone } from "../domain/analysis";
 import type { DependencyFile } from "../domain/dependency";
@@ -13,6 +13,7 @@ import { dependencyFiles, dependencyTotals } from "../domain/dependency";
 import type { ChangeFilter } from "./ChangeList";
 import { CHANGE_FILTERS, ChangeList, isInFilter, OPEN_CHANGE_FILTER } from "./ChangeList";
 import { ChangeStateBadge } from "./ChangeStateBadge";
+import { CommitHistory } from "./CommitHistory";
 import { CountRow, movementSlots } from "./Counts";
 import { DependencyFileList } from "./DependencyFiles";
 import { StatusDot, toneLabel } from "./StatusDot";
@@ -22,6 +23,7 @@ export type ProjectDashboardProperties = {
   projectId: string;
   projectForge: ForgeKind | undefined;
   analyses: readonly Analysis[];
+  commits: readonly Commit[];
   isDiscovering: boolean;
   discoverError: string | null;
   onDiscover: () => void;
@@ -92,10 +94,10 @@ export const ProjectDashboard = (properties: ProjectDashboardProperties) => {
     .slice(0, 4);
   const filteredChanges = (): readonly Analysis[] => changes().filter(analysis => isInFilter(analysis, filter()));
   const countFor = (option: ChangeFilter): number => changes().filter(analysis => isInFilter(analysis, option)).length;
-  const defaultBranchLabel = (): string => {
+  const defaultBranchName = (): string | undefined => {
     const branch = branches()[0];
 
-    return branch === undefined ? "Not discovered yet" : subjectLabel(branch.subject);
+    return branch === undefined ? undefined : subjectLabel(branch.subject);
   };
 
   return (
@@ -104,12 +106,21 @@ export const ProjectDashboard = (properties: ProjectDashboardProperties) => {
         {message => <p class="text-sm text-red-600 dark:text-red-400">{message()}</p>}
       </Show>
       <div class="grid divide-y divide-slate-200 rounded-lg border border-slate-200 sm:grid-cols-2 sm:divide-x sm:divide-y-0 dark:divide-slate-800 dark:border-slate-800">
-        <div class="p-4">
+        <div class="min-w-0 p-4">
           <p class="text-xs font-medium tracking-wide text-slate-500 uppercase dark:text-slate-400">Default branch</p>
           <p class="mt-2 flex items-center gap-2 text-lg font-semibold text-slate-900 dark:text-slate-100">
             <ToneValue tone={worstTone(branches().map(analysis => analysisTone(analysis)))} />
           </p>
-          <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">{defaultBranchLabel()}</p>
+          <p class="mt-1 truncate font-mono text-sm text-slate-500 dark:text-slate-400">
+            {defaultBranchName() ?? "Not discovered yet"}
+          </p>
+          <Show when={properties.commits[0]}>
+            {head => (
+              <p class="mt-0.5 truncate text-sm text-slate-700 dark:text-slate-300" title={head().summary}>
+                {head().summary}
+              </p>
+            )}
+          </Show>
         </div>
         <div class="p-4">
           <p class="text-xs font-medium tracking-wide text-slate-500 uppercase dark:text-slate-400">Open pull requests</p>
@@ -148,24 +159,21 @@ export const ProjectDashboard = (properties: ProjectDashboardProperties) => {
         <Tabs.Content value="timeline" class="pt-4">
           <div class="space-y-6">
             <section class="space-y-3">
-              <h3 class="text-sm font-semibold tracking-wide text-slate-500 uppercase dark:text-slate-400">Default branch</h3>
-              <ul class="space-y-2">
-                <For each={branches()} fallback={empty("Run discovery to read the default branch.")}>
-                  {analysis => (
-                    <SubjectRow
-                      analysis={analysis}
-                      analyses={properties.analyses}
-                      projectId={properties.projectId}
-                      projectForge={properties.projectForge}
-                    />
-                  )}
-                </For>
-              </ul>
+              <h3 class="text-sm font-semibold tracking-wide text-slate-500 uppercase dark:text-slate-400">
+                {defaultBranchName() ?? "Default branch"}
+              </h3>
+              <Show when={properties.commits.length > 0} fallback={empty("Run discovery to read the default branch.")}>
+                <CommitHistory
+                  projectId={properties.projectId}
+                  commits={properties.commits}
+                  analyses={properties.analyses}
+                />
+              </Show>
             </section>
             <section class="space-y-3">
-              <h3 class="text-sm font-semibold tracking-wide text-slate-500 uppercase dark:text-slate-400">Recent scans</h3>
+              <h3 class="text-sm font-semibold tracking-wide text-slate-500 uppercase dark:text-slate-400">Recent changes</h3>
               <ul class="space-y-2">
-                <For each={scanned(properties.analyses)} fallback={empty("No scan has run for this project.")}>
+                <For each={scanned(changes())} fallback={empty("No change has been scanned yet.")}>
                   {analysis => (
                     <SubjectRow
                       analysis={analysis}

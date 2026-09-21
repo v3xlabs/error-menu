@@ -357,3 +357,38 @@ async fn repeated_long_directory_paths_have_a_byte_budget() {
         Err(MirrorError::TreePathsTooLarge)
     ));
 }
+
+#[tokio::test]
+async fn a_log_reads_the_main_line_newest_first() {
+    let fixture = Fixture::build();
+    let mirror = fixture.mirror().await;
+
+    let line = mirror
+        .log(&fixture.commits[1], 10)
+        .await
+        .expect("reads the log");
+
+    assert_eq!(
+        line.iter()
+            .map(|commit| commit.summary.as_str())
+            .collect::<Vec<_>>(),
+        ["bbb", "aaa"]
+    );
+    assert_eq!(line[0].sha, fixture.commits[1]);
+    assert_eq!(line[1].sha, fixture.commits[0]);
+    assert_eq!(line[0].author.as_deref(), Some("Fixture"));
+}
+
+#[tokio::test]
+async fn a_log_reads_no_more_commits_than_it_was_asked_for() {
+    let fixture = Fixture::build();
+    let mirror = fixture.mirror().await;
+
+    let line = mirror
+        .log(&fixture.commits[1], 1)
+        .await
+        .expect("reads the log");
+
+    assert_eq!(line.len(), 1);
+    assert_eq!(line[0].sha, fixture.commits[1]);
+}

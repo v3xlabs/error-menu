@@ -2,13 +2,16 @@ import { useParams } from "@solidjs/router";
 import type { JSX } from "@solidjs/web";
 import { createEffect, createSignal, Show } from "solid-js";
 
-import type { Analysis, Job } from "../api/projects";
-import { discoverProject, listAnalyses, listJobs, readProject } from "../api/projects";
+import type { Analysis, Commit, Job } from "../api/projects";
+import { discoverProject, listAnalyses, listCommits, listJobs, readProject } from "../api/projects";
 import type { components } from "../api/schema.gen";
 import { ProjectDashboard } from "../components/ProjectDashboard";
 import { ProjectHeader } from "../components/ProjectHeader";
 import { forgeKind } from "../domain/analysis";
 import { isMoving, nextQueueReadMs, queueState } from "../domain/job";
+
+// Enough of the branch to see what landed lately without turning the page into a log.
+const SHOWN_COMMITS = 8;
 
 type Project = components["schemas"]["ProjectOutput"];
 type ProjectState = { phase: "loading"; } | { phase: "loaded"; project: Project; } | { phase: "error"; message: string; };
@@ -21,6 +24,7 @@ export const ProjectPage = () => {
   const [discoverState, setDiscoverState] = createSignal<DiscoverState>({ phase: "ready" });
   const routeParameters = useParams<{ projectId: string; }>();
   const [jobs, setJobs] = createSignal<readonly Job[]>([]);
+  const [commits, setCommits] = createSignal<readonly Commit[]>([]);
   const [queueError, setQueueError] = createSignal<string | null>(null);
 
   const reload = async (projectId: string): Promise<void> => {
@@ -30,10 +34,15 @@ export const ProjectPage = () => {
       ? { phase: "loaded", project: result.value }
       : { phase: "error", message: result.message });
   };
-  const loadAnalyses = async (projectId: string): Promise<void> => {
-    const result = await listAnalyses(projectId);
+  // A commit list is read from the mirror, so a project that was never discovered has no
+  // mirror to read and answers 404. That is an empty history, not a page failure.
+  const loadHistory = async (projectId: string): Promise<void> => {
+    const [analyses, commits] = await Promise.all([listAnalyses(projectId), listCommits(projectId, SHOWN_COMMITS)]);
 
-    setHistoryState(result.ok ? { phase: "loaded", analyses: result.value } : { phase: "error", message: result.message });
+    setHistoryState(analyses.ok
+      ? { phase: "loaded", analyses: analyses.value }
+      : { phase: "error", message: analyses.message });
+    setCommits(commits.ok ? commits.value : []);
   };
   const discover = async (projectId: string): Promise<void> => {
     setDiscoverState({ phase: "running" });
@@ -41,7 +50,7 @@ export const ProjectPage = () => {
     const result = await discoverProject(projectId);
 
     setDiscoverState(result.ok ? { phase: "ready" } : { phase: "error", message: result.message });
-    await loadAnalyses(projectId);
+    await loadHistory(projectId);
   };
   // A finished scan changes what the analyses read, so the queue read is what tells the
   // page to look again.
@@ -59,7 +68,7 @@ export const ProjectPage = () => {
     setQueueError(null);
     setJobs(result.value);
 
-    if (wasMoving && !isMoving(queueState(result.value))) await loadAnalyses(projectId);
+    if (wasMoving && !isMoving(queueState(result.value))) await loadHistory(projectId);
   };
   const analyses = (): readonly Analysis[] => {
     const current = historyState();
@@ -83,7 +92,7 @@ export const ProjectPage = () => {
       void readProject(projectId).then((result) => {
         setState(result.ok ? { phase: "loaded", project: result.value } : { phase: "error", message: result.message });
       });
-      void loadAnalyses(projectId);
+      void loadHistory(projectId);
       void loadJobs(projectId);
     },
   );
@@ -108,7 +117,7 @@ export const ProjectPage = () => {
         isDiscovering={discoverState().phase === "running"}
         queue={queueState(jobs())}
         onDiscover={() => void discover(project.project_id)}
-        onAnalysed={() => void loadAnalyses(project.project_id)}
+        onAnalysed={() => void loadHistory(project.project_id)}
         onSaved={() => void reload(project.project_id)}
       />
       <Show when={queueError()}>{message => <p class="text-sm text-red-600 dark:text-red-400">{message()}</p>}</Show>
@@ -121,10 +130,11 @@ export const ProjectPage = () => {
           projectId={project.project_id}
           projectForge={forgeKind(project.forge)}
           analyses={analyses()}
+          commits={commits()}
           isDiscovering={discoverState().phase === "running"}
           discoverError={discoverError()}
           onDiscover={() => void discover(project.project_id)}
-          onAnalysed={() => void loadAnalyses(project.project_id)}
+          onAnalysed={() => void loadHistory(project.project_id)}
         />
       </Show>
     </div>

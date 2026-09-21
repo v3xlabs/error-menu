@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use gix::bstr::{BStr, ByteSlice};
 use gix::diff::tree::{Recorder, Visit, visit};
+use jiff::Timestamp;
 
 use crate::prelude::*;
 use crate::vcs::RepoPathError;
@@ -90,6 +91,17 @@ pub enum FileChange {
     Added,
     Modified,
     Deleted,
+}
+
+/// One commit of a repository's main line. The summary is the first line of the message,
+/// which is how a reader recognises a commit, and the author is the name the commit was
+/// written with rather than an account that exists anywhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoggedCommit {
+    pub sha: CommitSha,
+    pub summary: String,
+    pub author: Option<String>,
+    pub authored_at: Timestamp,
 }
 
 /// What git alone knows about a repository's main line: the branch the remote advertises
@@ -377,6 +389,57 @@ impl Mirror {
             CommitSha::new(&parent.to_hex().to_string())
                 .map(Some)
                 .map_err(|source| failed("reading a commit parent")(Box::new(source)))
+        })
+        .await
+    }
+
+    /// The main line back from a commit, newest first. A merge hides the commits it
+    /// brought in, so this reads the branch the way its own history was written rather
+    /// than interleaving every side branch that ever landed.
+    ///
+    /// The commit-graph is deliberately not used: every commit here is read for its
+    /// message and author, so the object has to be loaded anyway.
+    pub async fn log(
+        &self,
+        head: &CommitSha,
+        limit: usize,
+    ) -> Result<Vec<LoggedCommit>, MirrorError> {
+        let repository = self.repository.clone();
+        let head = head.clone();
+
+        blocking(move || {
+            let repository = repository.to_thread_local();
+            let mut line = Vec::new();
+            let mut next = Some(object_id(&head)?);
+
+            while line.len() < limit {
+                let Some(id) = next else {
+                    break;
+                };
+                let commit = repository
+                    .find_object(id)
+                    .map_err(|source| failed("finding a commit")(Box::new(source)))?
+                    .try_into_commit()
+                    .map_err(|source| failed("reading a commit")(Box::new(source)))?;
+                let message = commit
+                    .message()
+                    .map_err(|source| failed("reading a commit message")(Box::new(source)))?;
+                let author = commit
+                    .author()
+                    .map_err(|source| failed("reading a commit author")(Box::new(source)))?;
+
+                line.push(LoggedCommit {
+                    sha: CommitSha::new(&id.to_hex().to_string())
+                        .map_err(|source| failed("reading a commit")(Box::new(source)))?,
+                    summary: message.summary().to_string(),
+                    author: text(author.name),
+                    authored_at: Timestamp::from_second(author.seconds())
+                        .unwrap_or(Timestamp::UNIX_EPOCH),
+                });
+                next = commit.parent_ids().next().map(|parent| parent.detach());
+            }
+
+            Ok(line)
         })
         .await
     }

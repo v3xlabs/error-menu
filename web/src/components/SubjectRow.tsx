@@ -4,9 +4,10 @@ import { Show } from "solid-js";
 
 import type { Analysis } from "../api/projects";
 import type { ForgeKind } from "../domain/analysis";
-import { distinctPeople, findingsOf, subjectLabel, subjectPath, worstFindingTone } from "../domain/analysis";
+import { distinctPeople, runTone, subjectLabel, subjectPath } from "../domain/analysis";
+import type { AnalyzerRingEntry } from "./AnalyzerRing";
+import { AnalyzerRing } from "./AnalyzerRing";
 import { ChangeStateBadge } from "./ChangeStateBadge";
-import { Gauge } from "./Gauge";
 import { PersonRow } from "./PersonAvatar";
 import { SignatureBadge } from "./SignatureBadge";
 
@@ -16,7 +17,12 @@ export const SubjectRow = (properties: {
   analyses: readonly Analysis[];
   projectId: string;
 }) => {
-  const findingCount = (): number => findingsOf(properties.analysis).length;
+  const entries = (): readonly AnalyzerRingEntry[] =>
+    properties.analysis.analyzers.map(run => ({
+      analyzer: run.analyzer,
+      tone: runTone(run),
+      finding_count: run.findings.length,
+    }));
 
   return (
     <div class="rounded-md border border-slate-200 px-3 py-2 dark:border-slate-800">
@@ -33,18 +39,7 @@ export const SubjectRow = (properties: {
             </Show>
           </a>
         </span>
-        <span class="flex items-center gap-2">
-          <Show when={findingCount() > 0}>
-            <Gauge
-              tone={worstFindingTone(properties.analysis)}
-              value={findingCount()}
-              label={`${findingCount()} findings across ${properties.analysis.analyzers.length} analyzers`}
-            />
-          </Show>
-          <Show when={findingCount() === 0 && properties.analysis.analyzers.length > 0}>
-            <Gauge tone="clear" value={0} label="Every analyzer finished and found nothing" />
-          </Show>
-        </span>
+        <AnalyzerRing entries={entries()} size={28} />
       </div>
       <div class="mt-1.5 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
         <PersonRow

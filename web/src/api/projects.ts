@@ -261,6 +261,28 @@ export const readTree = async (projectId: string, path: string): Promise<Result<
   }
 };
 
+export type Commit = components["schemas"]["CommitOutput"];
+
+export const listCommits = async (projectId: string, limit: number): Promise<Result<readonly Commit[]>> => {
+  const response = await api("/projects/{project_id}/commits", "get", {
+    path: { project_id: projectId },
+    query: { limit },
+  });
+
+  if (response.status === 200) return { ok: true, value: response.data.commits };
+
+  switch (response.status) {
+    case 400:
+    case 404:
+    case 500: {
+      return { ok: false, message: response.data.message };
+    }
+    default: {
+      return failed(response.status);
+    }
+  }
+};
+
 export type ProjectMember = components["schemas"]["ProjectMemberOutput"];
 export type ProjectRole = components["schemas"]["ProjectRoleOutput"];
 

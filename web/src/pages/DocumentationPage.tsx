@@ -1,8 +1,9 @@
-import { createApiReference } from "@scalar/api-reference";
 import "@scalar/api-reference/style.css";
+
+import { createApiReference } from "@scalar/api-reference";
 import { onSettled } from "solid-js";
 
-export const DocsPage = () => {
+export const DocumentationPage = () => {
   let referenceElement: HTMLDivElement | undefined;
 
   onSettled(() => {
@@ -18,5 +19,9 @@ export const DocsPage = () => {
     return reference.destroy;
   });
 
-  return <div ref={element => { referenceElement = element; }} />;
+  const keepElement = (element: HTMLDivElement): void => {
+    referenceElement = element;
+  };
+
+  return <div ref={keepElement} />;
 };

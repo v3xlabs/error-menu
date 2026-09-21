@@ -4,7 +4,6 @@ import type { components } from "../api/schema.gen";
 import type { QueueState } from "../domain/job";
 import { InspectModal } from "./InspectModal";
 import { ProjectMark } from "./ProjectMark";
-import { ProjectMembersDialog } from "./ProjectMembersDialog";
 import { ProjectSettingsModal } from "./ProjectSettingsModal";
 import { QueueStateBadge } from "./QueueState";
 
@@ -56,7 +55,6 @@ export const ProjectHeader = (properties: {
             </button>
           </Show>
           <Show when={isOwner()}>
-            <ProjectMembersDialog projectId={properties.project.project_id} />
             <ProjectSettingsModal project={properties.project} onSaved={() => properties.onSaved()} />
           </Show>
         </div>
