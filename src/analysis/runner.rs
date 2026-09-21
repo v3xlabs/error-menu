@@ -45,6 +45,8 @@ pub enum AnalysisError {
     ProjectNotFound,
     #[error("commit has no parent")]
     RootCommit,
+    #[error("forge: {0}")]
+    Forge(#[from] ForgeReadError),
     #[error("repository: {0}")]
     Repository(#[from] MirrorError),
     #[error("database: {0}")]
@@ -170,6 +172,16 @@ pub async fn run_target_in_mirror(
     let merge_base = mirror.merge_base(&target.base, &target.head).await?;
     let changed_files = mirror.changed_files(&target.base, &target.head).await?;
     let analyzers = project.effective_analyzers(&state.database).await?;
+    // Read before anything is written: a budget wait must leave no snapshot behind for a
+    // later pass to find.
+    let check_runs = if analyzers
+        .iter()
+        .any(|analyzer| analyzer == ci_checks::ANALYZER)
+    {
+        Some(check_run_input(project, &target.head, &state.forge).await?)
+    } else {
+        None
+    };
     let subject = Subject::upsert(&state.database, project.id, target.subject).await?;
     let snapshot = Snapshot::record(
         &state.database,
@@ -180,14 +192,6 @@ pub async fn run_target_in_mirror(
         target.forge,
     )
     .await?;
-    let check_runs = analyzers
-        .iter()
-        .any(|analyzer| analyzer == ci_checks::ANALYZER)
-        .then(|| check_run_input(project, &target.head, &state.forge));
-    let check_runs = match check_runs {
-        Some(input) => Some(input.await),
-        None => None,
-    };
     if let Some(CheckRunInput::Ready(check_runs)) = check_runs.as_ref() {
         ci_checks::CheckRun::replace(&state.database, snapshot.id, check_runs).await?;
     }
@@ -255,15 +259,19 @@ async fn check_run_input(
     project: &Project,
     head: &CommitSha,
     reader: &ForgeReader,
-) -> CheckRunInput {
+) -> Result<CheckRunInput, ForgeReadError> {
     let result = reader
         .check_runs(&project.remote, project.forge_kind, head)
         .await;
 
     match result {
-        Ok(check_runs) => CheckRunInput::Ready(check_runs),
-        Err(ForgeReadError::ForgeType) => CheckRunInput::NotConfigured,
-        Err(error) => CheckRunInput::Failed(error.to_string()),
+        Ok(check_runs) => Ok(CheckRunInput::Ready(check_runs)),
+        Err(ForgeReadError::ForgeType) => Ok(CheckRunInput::NotConfigured),
+        // A forge that will not answer leaves the status unknown, and an analyzer can say
+        // so. A forge that is out of budget will answer later, and saying "unknown" now
+        // fixes that answer to this head for good.
+        Err(error @ ForgeReadError::RateLimited { .. }) => Err(error),
+        Err(error) => Ok(CheckRunInput::Failed(error.to_string())),
     }
 }
 

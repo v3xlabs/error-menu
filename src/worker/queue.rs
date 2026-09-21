@@ -7,12 +7,10 @@ use sqlx::sqlite::SqliteRow;
 
 use crate::app::AppState;
 use crate::database::codec::{DecodeRow, FromStored, StoredAs};
-use crate::forge::reader::ForgeReadError;
 use crate::prelude::*;
 use crate::user::token::ApiToken;
 use crate::user::{attempt, session};
 use crate::worker::discovery;
-use crate::worker::discovery::DiscoveryError;
 use tracing::Instrument;
 
 /// How long a claim holds a job before another worker may take it. It has to outlast the
@@ -361,27 +359,30 @@ async fn run(state: &AppState, job: Job) -> Result<(), DatabaseError> {
                     "discovery finished"
                 );
             }
-            Err(DiscoveryError::Forge(ForgeReadError::RateLimited { host, reset })) => {
-                let message = format!("{host} has no request budget left until {reset}");
-                job.defer(&state.database, reset, &message).await?;
-                tracing::warn!(
-                    %host,
-                    %reset,
-                    "discovery is waiting for the forge request budget"
-                );
-            }
-            Err(error) => {
-                let message = error.to_string();
-                let retry_at = (job.attempts < MAX_ATTEMPTS)
-                    .then(|| Timestamp::now() + Duration::from_secs(backoff_seconds(job.attempts)));
+            Err(error) => match error.rate_limited() {
+                Some((host, reset)) => {
+                    let message = format!("{host} has no request budget left until {reset}");
+                    job.defer(&state.database, reset, &message).await?;
+                    tracing::warn!(
+                        %host,
+                        %reset,
+                        "discovery is waiting for the forge request budget"
+                    );
+                }
+                None => {
+                    let message = error.to_string();
+                    let retry_at = (job.attempts < MAX_ATTEMPTS).then(|| {
+                        Timestamp::now() + Duration::from_secs(backoff_seconds(job.attempts))
+                    });
 
-                job.fail(&state.database, &message, retry_at).await?;
-                tracing::warn!(
-                    attempts = job.attempts,
-                    retrying = retry_at.is_some(),
-                    "discovery failed: {message}"
-                );
-            }
+                    job.fail(&state.database, &message, retry_at).await?;
+                    tracing::warn!(
+                        attempts = job.attempts,
+                        retrying = retry_at.is_some(),
+                        "discovery failed: {message}"
+                    );
+                }
+            },
         },
     }
 

@@ -1,3 +1,5 @@
+use jiff::Timestamp;
+
 use crate::analysis::runner::{self, Analysis, AnalysisError, Target};
 use crate::app::AppState;
 use crate::forge::reader::ForgeReadError;
@@ -21,6 +23,24 @@ pub enum DiscoveryError {
     ChangeNotFound,
     #[error("the default branch has no parent commit")]
     DefaultBranchRoot,
+}
+
+impl DiscoveryError {
+    /// The forge budget this failure is waiting on, wherever it was raised. An analyzer
+    /// reads the forge as well, so a wait can arrive wrapped in an analysis failure, and a
+    /// caller that recognises one shape only would treat a wait as a broken project.
+    pub fn rate_limited(&self) -> Option<(&str, Timestamp)> {
+        let forge = match self {
+            Self::Forge(error) => error,
+            Self::Analysis(AnalysisError::Forge(error)) => error,
+            _ => return None,
+        };
+
+        match forge {
+            ForgeReadError::RateLimited { host, reset } => Some((host, *reset)),
+            _ => None,
+        }
+    }
 }
 
 pub struct Discovery {
@@ -234,11 +254,17 @@ async fn read_commit(
     head: &CommitSha,
 ) -> Result<CommitReading, DiscoveryError> {
     let signed = mirror.commit_signature(head).await?;
-    let reading = state
+    // An exhausted budget is a wait, not an answer. Recorded as an absence it would key an
+    // analysis to this head that nothing computes again.
+    let reading = match state
         .forge
         .read_commit(&project.remote, project.forge_kind, head)
         .await
-        .unwrap_or_default();
+    {
+        Ok(reading) => reading,
+        Err(error @ ForgeReadError::RateLimited { .. }) => return Err(error.into()),
+        Err(_) => CommitReading::default(),
+    };
 
     Ok(CommitReading {
         signature: if signed {
@@ -344,4 +370,32 @@ pub async fn scan_change(
     .await?;
 
     Ok(analysis.snapshot)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn exhausted() -> ForgeReadError {
+        ForgeReadError::RateLimited {
+            host: "api.github.com".to_owned(),
+            reset: Timestamp::from_second(3600).unwrap(),
+        }
+    }
+
+    #[test]
+    fn a_budget_wait_is_found_whether_discovery_or_an_analyzer_ran_into_it() {
+        let waiting = Some(("api.github.com", Timestamp::from_second(3600).unwrap()));
+
+        assert_eq!(DiscoveryError::Forge(exhausted()).rate_limited(), waiting);
+        assert_eq!(
+            DiscoveryError::Analysis(AnalysisError::Forge(exhausted())).rate_limited(),
+            waiting
+        );
+        assert_eq!(
+            DiscoveryError::Forge(ForgeReadError::ForgeType).rate_limited(),
+            None
+        );
+        assert_eq!(DiscoveryError::ProjectNotFound.rate_limited(), None);
+    }
 }

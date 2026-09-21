@@ -1,20 +1,18 @@
 use std::collections::BTreeMap;
 
 use jiff::Timestamp;
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use super::{ChangeState, CommitReading, DiscoveredChange, ForgeAccount, ForgeKind, ForgeMetadata};
-use crate::analysis::ci_checks::{CheckConclusion, CheckRun, CheckStatus};
+use super::gitea::Gitea;
+use super::github::Github;
+use super::gitlab::Gitlab;
+use super::{CommitReading, DiscoveredChange, Forge, ForgeKind};
+use crate::analysis::ci_checks::CheckRun;
 use crate::prelude::*;
 use crate::vcs::CommitShaError;
 
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
-const PAGE_SIZE: &str = "100";
-
-/// The public GitHub REST API answers on this host, so a credential for it is keyed here
-/// and not under the host a repository is cloned from.
-const GITHUB_API_HOST: &str = "api.github.com";
+pub(crate) const PAGE_SIZE: &str = "100";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ForgeReadError {
@@ -50,14 +48,14 @@ pub struct ForgeReader {
     credentials: BTreeMap<String, Credential>,
 }
 
-/// How a forge is told who is asking.
+/// How a forge is told who is asking. A forge offers its own through
+/// [`Forge::client_credential`]; an operator offers one for any host through `FORGE_TOKENS`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Credential {
+pub(crate) enum Credential {
     /// A token an account issued, carrying that account's reach.
     Token(String),
-    /// An OAuth app's own client id and secret. GitHub serves public data for these and
-    /// charges the app's budget rather than a person's, and they authorise nothing a
-    /// signed-out reader cannot already see.
+    /// An app's own client id and secret, which cost the app's budget rather than a
+    /// person's and authorise nothing a signed-out reader cannot already see.
     ClientApp { id: String, secret: String },
 }
 
@@ -79,30 +77,77 @@ impl Credential {
     }
 }
 
-struct Repository {
-    api: reqwest::Url,
-    prefix: Vec<String>,
+/// One repository on one forge: where that forge's API answers, and the path that names
+/// the repository under it.
+pub(crate) struct Repository {
+    base: ApiBase,
     path: Vec<String>,
     kind: ForgeKind,
 }
 
+/// Where a forge answers: the base its API lives under, and the segments every endpoint
+/// begins with. Each forge decides its own.
+pub(crate) struct ApiBase {
+    url: reqwest::Url,
+    prefix: Vec<String>,
+}
+
+impl ApiBase {
+    pub(crate) fn new(url: &str, prefix: &[&str]) -> Result<Self, ForgeReadError> {
+        Ok(Self {
+            url: reqwest::Url::parse(url).map_err(|_| ForgeReadError::RepositoryPath)?,
+            prefix: prefix.iter().map(|segment| (*segment).to_owned()).collect(),
+        })
+    }
+}
+
+/// A repository and the credentialed client that reads it. Forge implementations are
+/// handed one of these and never touch the transport themselves.
+pub(crate) struct Api<'a> {
+    reader: &'a ForgeReader,
+    pub(crate) repository: Repository,
+}
+
+impl Api<'_> {
+    pub(crate) async fn get<Value: DeserializeOwned>(
+        &self,
+        url: reqwest::Url,
+    ) -> Result<Value, ForgeReadError> {
+        let host = url.host_str().unwrap_or_default().to_owned();
+        let response = self.reader.authorised(&host, url).send().await?;
+        let status = response.status();
+        if status.is_client_error() {
+            return Err(refusal(host, &response, status.as_u16()));
+        }
+
+        decode(response.error_for_status()?).await
+    }
+
+    pub(crate) async fn get_with_query<Value: DeserializeOwned>(
+        &self,
+        mut url: reqwest::Url,
+        query: &[(&str, &str)],
+    ) -> Result<Value, ForgeReadError> {
+        url.query_pairs_mut().extend_pairs(query.iter().copied());
+        self.get(url).await
+    }
+}
+
 impl ForgeReader {
-    /// `FORGE_TOKENS` holds `host=token` pairs separated by commas. Public GitHub also
-    /// answers the OAuth app that signs users in: reads of public data made with its client
-    /// id and secret cost the app's budget of five thousand an hour instead of the sixty a
-    /// source address gets anonymously, and they ask for no permission over anyone's
-    /// account. An explicit token for a host wins over it. Without either, requests to a
-    /// host stay anonymous and share that host's anonymous budget.
+    /// `FORGE_TOKENS` holds `host=token` pairs separated by commas, and a forge may have a
+    /// credential of its own to offer. An explicit token for a host wins over it. Without
+    /// either, requests to a host stay anonymous and share that host's anonymous budget.
     pub fn new() -> Result<Self, ForgeReadError> {
         let mut credentials = credentials(std::env::var("FORGE_TOKENS").as_deref().unwrap_or(""));
-        let client_app = std::env::var("GITHUB_CLIENT_ID")
-            .ok()
-            .zip(std::env::var("GITHUB_CLIENT_SECRET").ok())
-            .filter(|(id, secret)| !id.is_empty() && !secret.is_empty());
-        if let Some((id, secret)) = client_app {
-            credentials
-                .entry(GITHUB_API_HOST.to_owned())
-                .or_insert(Credential::ClientApp { id, secret });
+        for (host, credential) in [
+            Github::client_credential(),
+            Gitlab::client_credential(),
+            Gitea::client_credential(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            credentials.entry(host).or_insert(credential);
         }
         for (host, credential) in &credentials {
             tracing::info!(%host, credential = credential.kind(), "forge reads are authenticated");
@@ -127,12 +172,12 @@ impl ForgeReader {
         remote: &RemoteUrl,
         configured_kind: ForgeKind,
     ) -> Result<Vec<DiscoveredChange>, ForgeReadError> {
-        let repository = Repository::from_remote(remote, configured_kind)?;
+        let api = self.api(remote, configured_kind)?;
 
-        match repository.kind {
-            ForgeKind::Github => self.github(&repository).await,
-            ForgeKind::Gitlab => self.gitlab(&repository).await,
-            ForgeKind::Gitea | ForgeKind::Forgejo => self.gitea(&repository).await,
+        match api.repository.kind {
+            ForgeKind::Github => Github::changes(&api).await,
+            ForgeKind::Gitlab => Gitlab::changes(&api).await,
+            ForgeKind::Gitea | ForgeKind::Forgejo => Gitea::changes(&api).await,
             ForgeKind::Auto => Err(ForgeReadError::ForgeType),
         }
     }
@@ -140,218 +185,48 @@ impl ForgeReader {
     /// What the forge says about a commit: the signature verdict, and which accounts wrote
     /// it. error.menu does not check the cryptography itself, so a forge that cannot answer
     /// leaves the verdict absent rather than turning "unknown" into "bad". The accounts are
-    /// the join between an address a commit was written with and a forge login, and GitLab's
-    /// signature endpoint carries none, so only GitHub, Gitea and Forgejo report them.
+    /// the join between an address a commit was written with and a forge login.
     pub async fn read_commit(
         &self,
         remote: &RemoteUrl,
         configured_kind: ForgeKind,
-        sha: &CommitSha,
+        head: &CommitSha,
     ) -> Result<CommitReading, ForgeReadError> {
-        let repository = Repository::from_remote(remote, configured_kind)?;
+        let api = self.api(remote, configured_kind)?;
 
-        match repository.kind {
-            ForgeKind::Github | ForgeKind::Gitea | ForgeKind::Forgejo => {
-                let commit: CommitDetail = self
-                    .get(repository.repository_url("repos", &["commits", sha.as_str()]))
-                    .await?;
-                let verification = commit.commit.verification;
-
-                Ok(CommitReading {
-                    signature: Signature {
-                        present: verification
-                            .as_ref()
-                            .is_some_and(|value| value.signature.is_some()),
-                        verified: verification.as_ref().map(|value| value.verified),
-                        signer: verification
-                            .as_ref()
-                            .and_then(|value| value.signer.as_ref())
-                            .map(|signer| signer.login.clone()),
-                        reason: verification.and_then(|value| value.reason),
-                    },
-                    accounts: [
-                        account_of(commit.commit.author, commit.author),
-                        account_of(commit.commit.committer, commit.committer),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .collect(),
-                })
-            }
-            ForgeKind::Gitlab => {
-                let endpoint = repository.endpoint(&[
-                    "projects",
-                    &repository.project_path(),
-                    "repository",
-                    "commits",
-                    sha.as_str(),
-                    "signature",
-                ]);
-                match self.get::<GitlabSignature>(endpoint).await {
-                    Ok(signature) => Ok(CommitReading {
-                        signature: Signature {
-                            present: true,
-                            verified: Some(signature.verification_status == "verified"),
-                            signer: signature.gpg_key_user_name,
-                            reason: Some(signature.verification_status),
-                        },
-                        accounts: Vec::new(),
-                    }),
-                    // GitLab answers 404 when the commit carries no signature at all.
-                    Err(ForgeReadError::Request(_)) => Ok(CommitReading::default()),
-                    Err(error) => Err(error),
-                }
-            }
+        match api.repository.kind {
+            ForgeKind::Github => Github::read_commit(&api, head).await,
+            ForgeKind::Gitlab => Gitlab::read_commit(&api, head).await,
+            ForgeKind::Gitea | ForgeKind::Forgejo => Gitea::read_commit(&api, head).await,
             ForgeKind::Auto => Err(ForgeReadError::ForgeType),
         }
     }
+
     pub async fn check_runs(
         &self,
         remote: &RemoteUrl,
         configured_kind: ForgeKind,
-        sha: &CommitSha,
+        head: &CommitSha,
     ) -> Result<Vec<CheckRun>, ForgeReadError> {
-        let repository = Repository::from_remote(remote, configured_kind)?;
+        let api = self.api(remote, configured_kind)?;
 
-        match repository.kind {
-            ForgeKind::Github => self.github_check_runs(&repository, sha).await,
-            ForgeKind::Gitlab => self.gitlab_check_runs(&repository, sha).await,
-            ForgeKind::Gitea | ForgeKind::Forgejo => self.gitea_check_runs(&repository, sha).await,
+        match api.repository.kind {
+            ForgeKind::Github => Github::check_runs(&api, head).await,
+            ForgeKind::Gitlab => Gitlab::check_runs(&api, head).await,
+            ForgeKind::Gitea | ForgeKind::Forgejo => Gitea::check_runs(&api, head).await,
             ForgeKind::Auto => Err(ForgeReadError::ForgeType),
         }
     }
 
-    async fn github_check_runs(
+    fn api(
         &self,
-        repository: &Repository,
-        sha: &CommitSha,
-    ) -> Result<Vec<CheckRun>, ForgeReadError> {
-        let response: GithubCheckRuns = self
-            .get_with_query(
-                repository.repository_url("repos", &["commits", sha.as_str(), "check-runs"]),
-                &[("per_page", PAGE_SIZE)],
-            )
-            .await?;
-
-        Ok(response
-            .check_runs
-            .into_iter()
-            .map(GithubCheckRun::into_check_run)
-            .collect())
-    }
-
-    async fn gitlab_check_runs(
-        &self,
-        repository: &Repository,
-        sha: &CommitSha,
-    ) -> Result<Vec<CheckRun>, ForgeReadError> {
-        let project: GitlabProject = self
-            .get(repository.endpoint(&["projects", &repository.project_path()]))
-            .await?;
-        let project_id = project.id.to_string();
-        let pipelines: Vec<GitlabPipeline> = self
-            .get_with_query(
-                repository.endpoint(&["projects", &project_id, "pipelines"]),
-                &[("sha", sha.as_str()), ("per_page", PAGE_SIZE)],
-            )
-            .await?;
-        let mut check_runs = Vec::new();
-
-        for pipeline in pipelines {
-            let pipeline_id = pipeline.id.to_string();
-            let jobs: Vec<GitlabJob> = self
-                .get_with_query(
-                    repository.endpoint(&[
-                        "projects",
-                        &project_id,
-                        "pipelines",
-                        &pipeline_id,
-                        "jobs",
-                    ]),
-                    &[("per_page", PAGE_SIZE)],
-                )
-                .await?;
-            check_runs.extend(
-                jobs.into_iter()
-                    .map(|job| job.into_check_run(repository, &project_id)),
-            );
-        }
-
-        Ok(check_runs)
-    }
-
-    async fn gitea_check_runs(
-        &self,
-        repository: &Repository,
-        sha: &CommitSha,
-    ) -> Result<Vec<CheckRun>, ForgeReadError> {
-        let response: GiteaCombinedStatus = self
-            .get(repository.repository_url("repos", &["commits", sha.as_str(), "status"]))
-            .await?;
-
-        Ok(response
-            .statuses
-            .into_iter()
-            .map(GiteaCommitStatus::into_check_run)
-            .collect())
-    }
-
-    async fn github(
-        &self,
-        repository: &Repository,
-    ) -> Result<Vec<DiscoveredChange>, ForgeReadError> {
-        let pulls: Vec<GithubPull> = self
-            .get_with_query(
-                repository.repository_url("repos", &["pulls"]),
-                &[
-                    ("state", "all"),
-                    ("sort", "updated"),
-                    ("direction", "desc"),
-                    ("per_page", PAGE_SIZE),
-                ],
-            )
-            .await?;
-
-        pulls.into_iter().map(TryInto::try_into).collect()
-    }
-
-    /// GitLab names a project by its id or by its path encoded as one segment, so the
-    /// numeric id it would cost a request to learn is never needed here.
-    async fn gitlab(
-        &self,
-        repository: &Repository,
-    ) -> Result<Vec<DiscoveredChange>, ForgeReadError> {
-        let changes: Vec<GitlabChange> = self
-            .get_with_query(
-                repository.endpoint(&["projects", &repository.project_path(), "merge_requests"]),
-                &[
-                    ("scope", "all"),
-                    ("order_by", "updated_at"),
-                    ("sort", "desc"),
-                    ("per_page", PAGE_SIZE),
-                ],
-            )
-            .await?;
-
-        changes.into_iter().map(TryInto::try_into).collect()
-    }
-
-    async fn gitea(
-        &self,
-        repository: &Repository,
-    ) -> Result<Vec<DiscoveredChange>, ForgeReadError> {
-        let changes: Vec<GiteaChange> = self
-            .get_with_query(
-                repository.repository_url("repos", &["pulls"]),
-                &[
-                    ("state", "all"),
-                    ("sort", "recentupdate"),
-                    ("limit", PAGE_SIZE),
-                ],
-            )
-            .await?;
-
-        changes.into_iter().map(TryInto::try_into).collect()
+        remote: &RemoteUrl,
+        configured_kind: ForgeKind,
+    ) -> Result<Api<'_>, ForgeReadError> {
+        Ok(Api {
+            reader: self,
+            repository: Repository::from_remote(remote, configured_kind)?,
+        })
     }
 
     /// A request carrying the credential its host is owed, if any.
@@ -362,29 +237,6 @@ impl ForgeReader {
             Some(credential) => credential.apply(request),
             None => request,
         }
-    }
-
-    async fn get<Value: DeserializeOwned>(
-        &self,
-        url: reqwest::Url,
-    ) -> Result<Value, ForgeReadError> {
-        let host = url.host_str().unwrap_or_default().to_owned();
-        let response = self.authorised(&host, url).send().await?;
-        let status = response.status();
-        if status.is_client_error() {
-            return Err(refusal(host, &response, status.as_u16()));
-        }
-
-        decode(response.error_for_status()?).await
-    }
-
-    async fn get_with_query<Value: DeserializeOwned>(
-        &self,
-        mut url: reqwest::Url,
-        query: &[(&str, &str)],
-    ) -> Result<Value, ForgeReadError> {
-        url.query_pairs_mut().extend_pairs(query.iter().copied());
-        self.get(url).await
     }
 }
 
@@ -426,37 +278,27 @@ impl Repository {
             Some(port) => format!("{host}:{port}"),
             None => host.to_owned(),
         };
-        // The public GitHub REST API answers on its own host. GitHub Enterprise Server
-        // serves the same API under the repository host instead.
-        let (api, prefix) = match kind {
-            ForgeKind::Github if host == "github.com" => ("https://api.github.com/", Vec::new()),
-            ForgeKind::Github => (&*format!("https://{authority}/"), vec!["api", "v3"]),
-            ForgeKind::Gitlab => (&*format!("https://{authority}/"), vec!["api", "v4"]),
-            ForgeKind::Gitea | ForgeKind::Forgejo => {
-                (&*format!("https://{authority}/"), vec!["api", "v1"])
-            }
+        let base = match kind {
+            ForgeKind::Github => Github::api_base(host, &authority)?,
+            ForgeKind::Gitlab => Gitlab::api_base(host, &authority)?,
+            ForgeKind::Gitea | ForgeKind::Forgejo => Gitea::api_base(host, &authority)?,
             ForgeKind::Auto => return Err(ForgeReadError::ForgeType),
         };
-        let api = reqwest::Url::parse(api).map_err(|_| ForgeReadError::RepositoryPath)?;
 
-        Ok(Self {
-            api,
-            prefix: prefix.into_iter().map(str::to_owned).collect(),
-            path,
-            kind,
-        })
+        Ok(Self { base, path, kind })
     }
 
-    fn project_path(&self) -> String {
+    pub(crate) fn project_path(&self) -> String {
         self.path.join("/")
     }
 
-    fn endpoint(&self, segments: &[&str]) -> reqwest::Url {
-        let mut url = self.api.clone();
+    pub(crate) fn endpoint(&self, segments: &[&str]) -> reqwest::Url {
+        let mut url = self.base.url.clone();
         let mut path = url
             .path_segments_mut()
             .expect("forge API base URL has a path");
         for segment in self
+            .base
             .prefix
             .iter()
             .map(String::as_str)
@@ -468,12 +310,12 @@ impl Repository {
         url
     }
 
-    fn repository_url(&self, prefix: &str, suffix: &[&str]) -> reqwest::Url {
-        let mut url = self.api.clone();
+    pub(crate) fn repository_url(&self, prefix: &str, suffix: &[&str]) -> reqwest::Url {
+        let mut url = self.base.url.clone();
         let mut owned = url
             .path_segments_mut()
             .expect("forge API base URL has a path");
-        for segment in self.prefix.iter().map(String::as_str) {
+        for segment in self.base.prefix.iter().map(String::as_str) {
             owned.push(segment);
         }
         owned.push(prefix);
@@ -548,439 +390,12 @@ async fn decode<Value: DeserializeOwned>(
 
 /// A forge reports an absent merge commit as null or as an empty string, and neither
 /// means the change was merged.
-fn optional_sha(value: Option<&str>) -> Option<CommitSha> {
+pub(crate) fn optional_sha(value: Option<&str>) -> Option<CommitSha> {
     value.and_then(|value| CommitSha::new(value).ok())
 }
 
-fn sha(field: &'static str, value: &str) -> Result<CommitSha, ForgeReadError> {
+pub(crate) fn sha(field: &'static str, value: &str) -> Result<CommitSha, ForgeReadError> {
     CommitSha::new(value).map_err(|source| ForgeReadError::Sha { field, source })
-}
-
-#[derive(Deserialize)]
-struct GithubCheckRuns {
-    #[serde(default)]
-    check_runs: Vec<GithubCheckRun>,
-}
-
-#[derive(Deserialize)]
-struct GithubCheckRun {
-    name: String,
-    status: String,
-    conclusion: Option<String>,
-    #[serde(default)]
-    details_url: Option<String>,
-    #[serde(default)]
-    url: Option<String>,
-}
-
-impl GithubCheckRun {
-    fn into_check_run(self) -> CheckRun {
-        let log_excerpt_ref = self.url;
-        let url = self.details_url.or_else(|| log_excerpt_ref.clone());
-
-        CheckRun {
-            name: self.name,
-            status: check_status(&self.status),
-            conclusion: self.conclusion.as_deref().and_then(check_conclusion),
-            url,
-            log_excerpt_ref,
-        }
-    }
-}
-
-#[derive(Deserialize)]
-struct GitlabPipeline {
-    id: u64,
-}
-
-#[derive(Deserialize)]
-struct GitlabJob {
-    id: u64,
-    name: String,
-    status: String,
-    #[serde(default)]
-    web_url: Option<String>,
-}
-
-impl GitlabJob {
-    fn into_check_run(self, repository: &Repository, project_id: &str) -> CheckRun {
-        let job_id = self.id.to_string();
-        let log_excerpt_ref = repository
-            .endpoint(&["projects", project_id, "jobs", &job_id, "trace"])
-            .to_string();
-
-        CheckRun {
-            name: self.name,
-            status: check_status(&self.status),
-            conclusion: check_conclusion(&self.status),
-            url: self.web_url,
-            log_excerpt_ref: Some(log_excerpt_ref),
-        }
-    }
-}
-
-#[derive(Deserialize)]
-struct GiteaCombinedStatus {
-    #[serde(default)]
-    statuses: Vec<GiteaCommitStatus>,
-}
-
-#[derive(Deserialize)]
-struct GiteaCommitStatus {
-    context: String,
-    status: String,
-    #[serde(default)]
-    target_url: Option<String>,
-    #[serde(default)]
-    url: Option<String>,
-}
-
-impl GiteaCommitStatus {
-    fn into_check_run(self) -> CheckRun {
-        let log_excerpt_ref = self.url;
-        let url = self.target_url.or_else(|| log_excerpt_ref.clone());
-
-        CheckRun {
-            name: self.context,
-            status: check_status(&self.status),
-            conclusion: check_conclusion(&self.status),
-            url,
-            log_excerpt_ref,
-        }
-    }
-}
-
-fn check_status(value: &str) -> CheckStatus {
-    match value {
-        "queued" | "pending" | "created" | "scheduled" => CheckStatus::Queued,
-        "completed" | "success" | "failure" | "failed" | "error" | "warning" | "neutral"
-        | "skipped" | "cancelled" | "canceled" | "timed_out" | "action_required" | "stale" => {
-            CheckStatus::Completed
-        }
-        _ => CheckStatus::InProgress,
-    }
-}
-
-fn check_conclusion(value: &str) -> Option<CheckConclusion> {
-    match value {
-        "success" => Some(CheckConclusion::Success),
-        "failure" | "failed" | "error" => Some(CheckConclusion::Failure),
-        "warning" | "neutral" => Some(CheckConclusion::Neutral),
-        "skipped" => Some(CheckConclusion::Skipped),
-        "cancelled" | "canceled" => Some(CheckConclusion::Cancelled),
-        "timed_out" => Some(CheckConclusion::TimedOut),
-        "action_required" => Some(CheckConclusion::ActionRequired),
-        "stale" => Some(CheckConclusion::Stale),
-        _ => None,
-    }
-}
-
-#[derive(Deserialize)]
-struct GithubPull {
-    number: u64,
-    html_url: String,
-    title: String,
-    body: Option<String>,
-    state: String,
-    merged_at: Option<String>,
-    merge_commit_sha: Option<String>,
-    user: GithubUser,
-    #[serde(default)]
-    requested_reviewers: Vec<GithubUser>,
-    base: GithubReference,
-    head: GithubReference,
-}
-
-#[derive(Deserialize)]
-struct GithubUser {
-    login: String,
-    avatar_url: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct GithubReference {
-    sha: String,
-    #[serde(rename = "ref")]
-    name: String,
-}
-
-impl GithubUser {
-    fn person(self, role: PersonRole) -> Person {
-        Person {
-            role,
-            name: None,
-            email: None,
-            login: Some(self.login),
-            avatar_url: self.avatar_url,
-        }
-    }
-}
-
-impl TryFrom<GithubPull> for DiscoveredChange {
-    type Error = ForgeReadError;
-
-    fn try_from(change: GithubPull) -> Result<Self, Self::Error> {
-        let state = if change.merged_at.is_some() {
-            ChangeState::Merged
-        } else if change.state == "closed" {
-            ChangeState::Closed
-        } else {
-            ChangeState::Open
-        };
-        let mut people = vec![change.user.person(PersonRole::Submitter)];
-        people.extend(
-            change
-                .requested_reviewers
-                .into_iter()
-                .map(|user| user.person(PersonRole::Reviewer)),
-        );
-
-        Ok(Self {
-            number: change.number,
-            fetch_ref: super::change_fetch_ref(ForgeKind::Github, change.number),
-            base: sha("pull request base", &change.base.sha)?,
-            head: sha("pull request head", &change.head.sha)?,
-            metadata: ForgeMetadata {
-                title: Some(change.title),
-                body: change.body,
-                author: people.first().and_then(|person| person.login.clone()),
-                url: Some(change.html_url),
-                base_ref: Some(change.base.name),
-                head_ref: Some(change.head.name),
-                state: Some(state),
-                merge_commit: optional_sha(change.merge_commit_sha.as_deref()),
-                people: crate::project::person::deduplicate(people),
-                signature: Signature::default(),
-            },
-        })
-    }
-}
-
-#[derive(Deserialize)]
-struct GitlabProject {
-    id: u64,
-}
-
-#[derive(Deserialize)]
-struct GitlabChange {
-    iid: u64,
-    web_url: String,
-    title: String,
-    description: Option<String>,
-    state: String,
-    merge_commit_sha: Option<String>,
-    author: GitlabUser,
-    #[serde(default)]
-    reviewers: Vec<GitlabUser>,
-    target_branch: String,
-    source_branch: String,
-    sha: String,
-    diff_refs: GitlabDiffReferences,
-}
-
-#[derive(Deserialize)]
-struct GitlabUser {
-    username: String,
-    name: Option<String>,
-    avatar_url: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct GitlabDiffReferences {
-    base_sha: String,
-}
-
-impl GitlabUser {
-    fn person(self, role: PersonRole) -> Person {
-        Person {
-            role,
-            name: self.name,
-            email: None,
-            login: Some(self.username),
-            avatar_url: self.avatar_url,
-        }
-    }
-}
-
-impl TryFrom<GitlabChange> for DiscoveredChange {
-    type Error = ForgeReadError;
-
-    fn try_from(change: GitlabChange) -> Result<Self, Self::Error> {
-        let state = match change.state.as_str() {
-            "merged" => ChangeState::Merged,
-            "closed" | "locked" => ChangeState::Closed,
-            _ => ChangeState::Open,
-        };
-        let mut people = vec![change.author.person(PersonRole::Submitter)];
-        people.extend(
-            change
-                .reviewers
-                .into_iter()
-                .map(|user| user.person(PersonRole::Reviewer)),
-        );
-
-        Ok(Self {
-            number: change.iid,
-            fetch_ref: super::change_fetch_ref(ForgeKind::Gitlab, change.iid),
-            base: sha("merge request base", &change.diff_refs.base_sha)?,
-            head: sha("merge request head", &change.sha)?,
-            metadata: ForgeMetadata {
-                title: Some(change.title),
-                body: change.description,
-                author: people.first().and_then(|person| person.login.clone()),
-                url: Some(change.web_url),
-                base_ref: Some(change.target_branch),
-                head_ref: Some(change.source_branch),
-                state: Some(state),
-                merge_commit: optional_sha(change.merge_commit_sha.as_deref()),
-                people: crate::project::person::deduplicate(people),
-                signature: Signature::default(),
-            },
-        })
-    }
-}
-
-#[derive(Deserialize)]
-struct GiteaChange {
-    number: u64,
-    html_url: String,
-    title: String,
-    body: Option<String>,
-    state: String,
-    #[serde(default)]
-    merged: bool,
-    merge_commit_sha: Option<String>,
-    user: GiteaUser,
-    #[serde(default)]
-    requested_reviewers: Vec<GiteaUser>,
-    base: GiteaReference,
-    head: GiteaReference,
-}
-
-#[derive(Deserialize)]
-struct GiteaUser {
-    login: String,
-    full_name: Option<String>,
-    avatar_url: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct GiteaReference {
-    sha: String,
-    #[serde(rename = "ref")]
-    name: String,
-}
-
-impl GiteaUser {
-    fn person(self, role: PersonRole) -> Person {
-        Person {
-            role,
-            name: self.full_name.filter(|name| !name.is_empty()),
-            email: None,
-            login: Some(self.login),
-            avatar_url: self.avatar_url,
-        }
-    }
-}
-
-impl TryFrom<GiteaChange> for DiscoveredChange {
-    type Error = ForgeReadError;
-
-    fn try_from(change: GiteaChange) -> Result<Self, Self::Error> {
-        let state = if change.merged {
-            ChangeState::Merged
-        } else if change.state == "closed" {
-            ChangeState::Closed
-        } else {
-            ChangeState::Open
-        };
-        let mut people = vec![change.user.person(PersonRole::Submitter)];
-        people.extend(
-            change
-                .requested_reviewers
-                .into_iter()
-                .map(|user| user.person(PersonRole::Reviewer)),
-        );
-
-        Ok(Self {
-            number: change.number,
-            fetch_ref: super::change_fetch_ref(ForgeKind::Gitea, change.number),
-            base: sha("pull request base", &change.base.sha)?,
-            head: sha("pull request head", &change.head.sha)?,
-            metadata: ForgeMetadata {
-                title: Some(change.title),
-                body: change.body,
-                author: people.first().and_then(|person| person.login.clone()),
-                url: Some(change.html_url),
-                base_ref: Some(change.base.name),
-                head_ref: Some(change.head.name),
-                state: Some(state),
-                merge_commit: optional_sha(change.merge_commit_sha.as_deref()),
-                people: crate::project::person::deduplicate(people),
-                signature: Signature::default(),
-            },
-        })
-    }
-}
-
-#[derive(Deserialize)]
-struct CommitDetail {
-    commit: CommitBody,
-    author: Option<CommitAccount>,
-    committer: Option<CommitAccount>,
-}
-
-#[derive(Deserialize)]
-struct CommitBody {
-    verification: Option<CommitVerification>,
-    author: Option<CommitIdentity>,
-    committer: Option<CommitIdentity>,
-}
-
-#[derive(Deserialize)]
-struct CommitIdentity {
-    email: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct CommitAccount {
-    login: String,
-    avatar_url: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct CommitVerification {
-    verified: bool,
-    reason: Option<String>,
-    signature: Option<String>,
-    signer: Option<CommitSigner>,
-}
-
-#[derive(Deserialize)]
-struct CommitSigner {
-    login: String,
-}
-
-/// One account, only when the forge gave both halves of the join: the address the commit
-/// carries and the account it belongs to.
-fn account_of(
-    identity: Option<CommitIdentity>,
-    account: Option<CommitAccount>,
-) -> Option<ForgeAccount> {
-    let email = identity?.email?;
-    let account = account?;
-
-    Some(ForgeAccount {
-        email,
-        login: account.login,
-        avatar_url: account.avatar_url,
-    })
-}
-
-#[derive(Deserialize)]
-struct GitlabSignature {
-    verification_status: String,
-    gpg_key_user_name: Option<String>,
 }
 
 #[cfg(test)]
@@ -1049,7 +464,7 @@ mod tests {
         let reader = ForgeReader {
             client: reqwest::Client::new(),
             credentials: BTreeMap::from([(
-                GITHUB_API_HOST.to_owned(),
+                crate::forge::github::API_HOST.to_owned(),
                 Credential::ClientApp {
                     id: "app-id".to_owned(),
                     secret: "app-secret".to_owned(),
@@ -1059,7 +474,7 @@ mod tests {
 
         let authorised = reader
             .authorised(
-                GITHUB_API_HOST,
+                crate::forge::github::API_HOST,
                 reqwest::Url::parse("https://api.github.com/repos/o/r").unwrap(),
             )
             .build()
@@ -1187,17 +602,5 @@ mod tests {
             subject.repository_url("repos", &[]).as_str(),
             "https://forge.example.invalid:8443/api/v1/repos/team/service"
         );
-    }
-    #[test]
-    fn normalizes_provider_statuses_without_losing_failed_outcomes() {
-        assert_eq!(check_status("pending"), CheckStatus::Queued);
-        assert_eq!(check_status("running"), CheckStatus::InProgress);
-        assert_eq!(check_status("failed"), CheckStatus::Completed);
-        assert_eq!(check_conclusion("failed"), Some(CheckConclusion::Failure));
-        assert_eq!(
-            check_conclusion("canceled"),
-            Some(CheckConclusion::Cancelled)
-        );
-        assert_eq!(check_conclusion("running"), None);
     }
 }
