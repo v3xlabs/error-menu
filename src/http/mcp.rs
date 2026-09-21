@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use poem::{IntoEndpoint, Request};
+use poem::http::{HeaderValue, header};
+use poem::{EndpointExt, IntoEndpoint, Request};
 use poem_mcpserver::{McpServer, Tools, streamable_http, tool::StructuredContent};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -289,6 +290,28 @@ fn job_output(job: Job) -> JobOutput {
     }
 }
 
+const EVENT_STREAM: &str = "text/event-stream";
+
+/// poem-mcpserver 0.3.1 picks the response framing from the first entry of `Accept` alone,
+/// and its JSON arm answers even a single request with a one-element array. A client that
+/// reads one response object, as the Streamable HTTP transport is specified to, rejects
+/// that as malformed. The crate's event-stream arm is correct, so a client that offered
+/// `text/event-stream` anywhere is given it by naming it first. A client that never
+/// offered it keeps the framing it asked for.
+async fn prefer_event_stream(mut request: Request) -> poem::Result<Request> {
+    if request
+        .header(header::ACCEPT)
+        .is_some_and(|accept| accept.contains(EVENT_STREAM))
+    {
+        request.headers_mut().insert(
+            header::ACCEPT,
+            HeaderValue::from_static("text/event-stream, application/json"),
+        );
+    }
+
+    Ok(request)
+}
+
 pub fn endpoint(state: Arc<AppState>) -> impl IntoEndpoint {
     streamable_http::endpoint(move |request: &Request| {
         let user = request
@@ -304,4 +327,126 @@ pub fn endpoint(state: Arc<AppState>) -> impl IntoEndpoint {
             })
             .with_server_info("error.menu", env!("CARGO_PKG_VERSION"))
     })
+    .into_endpoint()
+    .before(prefer_event_stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use poem::http::{Method, StatusCode, Uri};
+    use poem::{Endpoint, Response};
+    use poem_mcpserver::content::Text;
+
+    use super::*;
+
+    struct ProbeTools;
+
+    #[Tools]
+    impl ProbeTools {
+        /// Exists so the probe server has one tool to list.
+        async fn ping(&self) -> Text<String> {
+            Text("pong".to_owned())
+        }
+    }
+
+    fn server() -> impl IntoEndpoint {
+        streamable_http::endpoint(|_: &Request| {
+            McpServer::new()
+                .tools(ProbeTools)
+                .with_server_info("probe", "0")
+        })
+    }
+
+    fn probe() -> impl Endpoint<Output = Response> {
+        server()
+            .into_endpoint()
+            .before(prefer_event_stream)
+            .map_to_response()
+    }
+
+    async fn session_of(endpoint: &impl Endpoint<Output = Response>) -> String {
+        let initialize = endpoint
+            .call(post(
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}"#,
+                None,
+            ))
+            .await
+            .expect("an initialize response");
+        assert_eq!(initialize.status(), StatusCode::OK);
+
+        initialize
+            .headers()
+            .get("Mcp-Session-Id")
+            .expect("a session")
+            .to_str()
+            .expect("a readable session")
+            .to_owned()
+    }
+
+    /// The `Accept` order every Streamable HTTP client sends, and the one that selects the
+    /// arm of poem-mcpserver that answers a single request with an array.
+    fn post(body: &'static str, session: Option<&str>) -> Request {
+        let mut builder = Request::builder()
+            .method(Method::POST)
+            .uri(Uri::from_static("/"))
+            .content_type("application/json")
+            .header(header::ACCEPT, "application/json, text/event-stream");
+        if let Some(session) = session {
+            builder = builder.header("Mcp-Session-Id", session);
+        }
+
+        builder.body(body)
+    }
+
+    #[tokio::test]
+    async fn a_call_answers_one_response_and_not_an_array_of_one() {
+        let endpoint = probe();
+        let session = session_of(&endpoint).await;
+
+        let listed = endpoint
+            .call(post(
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+                Some(&session),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            listed
+                .content_type()
+                .is_some_and(|content_type| content_type.starts_with(EVENT_STREAM)),
+            "framing must be the arm that answers one response per event"
+        );
+
+        let body = listed.into_body().into_string().await.expect("a body");
+        let frames = body
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .collect::<Vec<_>>();
+        assert_eq!(frames.len(), 1, "one request, one response: {body}");
+
+        let response: serde_json::Value =
+            serde_json::from_str(frames[0].trim()).expect("a JSON-RPC response");
+        assert!(response.is_object(), "not an array of one: {body}");
+        assert_eq!(response["id"], 2);
+    }
+
+    /// Why [`prefer_event_stream`] exists. When this fails, poem-mcpserver has learned to
+    /// answer a single request with a single object and the nudge can be deleted.
+    #[tokio::test]
+    async fn the_json_arm_still_answers_a_single_request_with_an_array() {
+        let endpoint = server().into_endpoint().map_to_response();
+        let session = session_of(&endpoint).await;
+
+        let listed = endpoint
+            .call(post(
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+                Some(&session),
+            ))
+            .await
+            .unwrap();
+        let body = listed.into_body().into_string().await.expect("a body");
+        let response: serde_json::Value = serde_json::from_str(&body).expect("a JSON body");
+
+        assert!(response.is_array(), "the crate was fixed upstream: {body}");
+    }
 }
