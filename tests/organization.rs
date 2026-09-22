@@ -1,10 +1,11 @@
 use error_menu::database::Database;
 use error_menu::forge::ForgeKind;
-use error_menu::organization::Organization;
 use error_menu::organization::member::{
     OrganizationMember, OrganizationMemberChange, OrganizationRole,
 };
+use error_menu::organization::{Organization, OrganizationDeletion};
 use error_menu::project::member::{ProjectMember, ProjectRole};
+use error_menu::project::transfer::ProjectTransfer;
 use error_menu::project::{NewProject, Project, ProjectSummary};
 use error_menu::user::User;
 use error_menu::vcs::RemoteUrl;
@@ -208,9 +209,10 @@ async fn a_grant_stops_at_the_edge_of_its_organization() {
     .await
     .expect("a grant");
 
-    assert_eq!(names(&fixture.visible_to(&fixture.coworker).await), [
-        "shared"
-    ]);
+    assert_eq!(
+        names(&fixture.visible_to(&fixture.coworker).await),
+        ["shared"]
+    );
     assert_eq!(
         ProjectRole::for_user(&fixture.database, &fixture.coworker, private.id)
             .await
@@ -238,13 +240,14 @@ async fn moving_a_project_moves_who_can_see_it() {
     assert!(fixture.visible_to(&fixture.coworker).await.is_empty());
 
     project
-        .move_to(&fixture.database, company.id)
+        .transfer(&fixture.database, &personal, &company, fixture.owner.id)
         .await
         .expect("moves");
 
-    assert_eq!(names(&fixture.visible_to(&fixture.coworker).await), [
-        "dotfiles"
-    ]);
+    assert_eq!(
+        names(&fixture.visible_to(&fixture.coworker).await),
+        ["dotfiles"]
+    );
 }
 
 #[tokio::test]
@@ -273,5 +276,199 @@ async fn an_organization_keeps_an_owner() {
             .await
             .expect("answers"),
         OrganizationMemberChange::Removed
+    );
+}
+
+/// Moving or deleting a project is gated on an owner grant on the organization holding it,
+/// which rests on a project grant never reaching the organization. A project owner who was
+/// given that one repository resolves to no organization role at all.
+#[tokio::test]
+async fn a_project_owner_is_not_an_owner_of_its_organization() {
+    let fixture = Fixture::build().await;
+    let personal = fixture.organization("Personal").await;
+    let project = fixture.project(&personal, "dotfiles").await;
+    ProjectMember::set(
+        &fixture.database,
+        project.id,
+        fixture.coworker.id,
+        ProjectRole::Owner,
+    )
+    .await
+    .expect("a grant");
+
+    assert_eq!(
+        ProjectRole::for_user(&fixture.database, &fixture.coworker, project.id)
+            .await
+            .expect("a role"),
+        Some(ProjectRole::Owner)
+    );
+    assert_eq!(
+        OrganizationRole::for_user(&fixture.database, &fixture.coworker, personal.id)
+            .await
+            .expect("a role"),
+        None
+    );
+}
+
+/// The existing move test proves the destination gains sight. This is the half nobody
+/// asserted: the organization a project leaves stops reaching it, on the listing and on
+/// the project itself.
+#[tokio::test]
+async fn a_transfer_takes_a_project_out_of_reach_of_its_old_organization() {
+    let fixture = Fixture::build().await;
+    let personal = fixture.organization("Personal").await;
+    let company = fixture.organization("Company A").await;
+    let project = fixture.project(&personal, "dotfiles").await;
+    OrganizationMember::set(
+        &fixture.database,
+        personal.id,
+        fixture.coworker.id,
+        OrganizationRole::Operator,
+    )
+    .await
+    .expect("a grant");
+
+    assert_eq!(
+        names(&fixture.visible_to(&fixture.coworker).await),
+        ["dotfiles"]
+    );
+
+    project
+        .transfer(&fixture.database, &personal, &company, fixture.owner.id)
+        .await
+        .expect("moves");
+
+    assert!(fixture.visible_to(&fixture.coworker).await.is_empty());
+    assert_eq!(
+        ProjectRole::for_user(&fixture.database, &fixture.coworker, project.id)
+            .await
+            .expect("a role"),
+        None
+    );
+}
+
+/// A project grant was given out about the project, so it travels with it. The reader who
+/// holds one keeps it inside the destination, where nobody granted it.
+#[tokio::test]
+async fn a_direct_project_grant_survives_a_transfer() {
+    let fixture = Fixture::build().await;
+    let personal = fixture.organization("Personal").await;
+    let company = fixture.organization("Company A").await;
+    let project = fixture.project(&personal, "dotfiles").await;
+    ProjectMember::set(
+        &fixture.database,
+        project.id,
+        fixture.coworker.id,
+        ProjectRole::Viewer,
+    )
+    .await
+    .expect("a grant");
+
+    project
+        .transfer(&fixture.database, &personal, &company, fixture.owner.id)
+        .await
+        .expect("moves");
+
+    assert_eq!(
+        ProjectRole::for_user(&fixture.database, &fixture.coworker, project.id)
+            .await
+            .expect("a role"),
+        Some(ProjectRole::Viewer)
+    );
+}
+
+/// The organization a project came from is overwritten by the move, so the record is the
+/// only thing that still holds it. It names organizations rather than referencing them,
+/// which is what lets an emptied organization be deleted afterwards.
+#[tokio::test]
+async fn a_transfer_records_where_the_project_came_from() {
+    let fixture = Fixture::build().await;
+    let personal = fixture.organization("Personal").await;
+    let company = fixture.organization("Company A").await;
+    let project = fixture.project(&personal, "dotfiles").await;
+
+    project
+        .transfer(&fixture.database, &personal, &company, fixture.owner.id)
+        .await
+        .expect("moves");
+
+    let transfers = ProjectTransfer::for_project(&fixture.database, project.id)
+        .await
+        .expect("transfers");
+
+    assert_eq!(transfers.len(), 1);
+    assert_eq!(transfers[0].from_organization_name, "Personal");
+    assert_eq!(transfers[0].to_organization_name, "Company A");
+    assert_eq!(transfers[0].moved_by, fixture.owner.id);
+    assert_eq!(transfers[0].moved_by_name, "owner");
+
+    assert_eq!(
+        personal.delete(&fixture.database).await.expect("answers"),
+        OrganizationDeletion::Deleted
+    );
+    assert_eq!(
+        ProjectTransfer::for_project(&fixture.database, project.id)
+            .await
+            .expect("transfers")
+            .len(),
+        1
+    );
+}
+
+/// Every listing and every access check reads `projects.organization_id`, so an
+/// organization that still holds projects cannot go: the projects would be unreachable.
+#[tokio::test]
+async fn an_organization_holding_projects_is_not_deleted() {
+    let fixture = Fixture::build().await;
+    let personal = fixture.organization("Personal").await;
+    let company = fixture.organization("Company A").await;
+    let project = fixture.project(&personal, "dotfiles").await;
+
+    assert_eq!(
+        personal.delete(&fixture.database).await.expect("answers"),
+        OrganizationDeletion::HoldsProjects(1)
+    );
+
+    project
+        .transfer(&fixture.database, &personal, &company, fixture.owner.id)
+        .await
+        .expect("moves");
+
+    assert_eq!(
+        personal.delete(&fixture.database).await.expect("answers"),
+        OrganizationDeletion::Deleted
+    );
+}
+
+/// Deleting a project takes its grants and its history with it. A member who reached it
+/// through a direct grant is left with nothing to reach.
+#[tokio::test]
+async fn deleting_a_project_takes_its_grants_with_it() {
+    let fixture = Fixture::build().await;
+    let personal = fixture.organization("Personal").await;
+    let project = fixture.project(&personal, "dotfiles").await;
+    ProjectMember::set(
+        &fixture.database,
+        project.id,
+        fixture.coworker.id,
+        ProjectRole::Operator,
+    )
+    .await
+    .expect("a grant");
+
+    project.delete(&fixture.database).await.expect("deletes");
+
+    assert!(fixture.visible_to(&fixture.owner).await.is_empty());
+    assert!(
+        Project::load(&fixture.database, project.id)
+            .await
+            .expect("answers")
+            .is_none()
+    );
+    assert_eq!(
+        ProjectMember::load(&fixture.database, project.id, fixture.coworker.id)
+            .await
+            .expect("answers"),
+        None
     );
 }

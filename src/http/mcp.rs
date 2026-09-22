@@ -119,7 +119,8 @@ impl ErrorMenuTools {
         let organization_name = self.organization_name(project.organization_id).await?;
 
         Ok(StructuredContent(
-            self.project_output(project, organization_name, role).await?,
+            self.project_output(project, organization_name, role)
+                .await?,
         ))
     }
 
@@ -191,10 +192,7 @@ impl ErrorMenuTools {
         Ok((project, role))
     }
 
-    async fn organization_name(
-        &self,
-        organization_id: Id<Organization>,
-    ) -> Result<String, String> {
+    async fn organization_name(&self, organization_id: Id<Organization>) -> Result<String, String> {
         Organization::load(&self.state.database, organization_id)
             .await
             .map_err(|error| {

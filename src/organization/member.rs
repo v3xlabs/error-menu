@@ -46,11 +46,9 @@ impl OrganizationRole {
             return Ok(Some(OrganizationRole::Owner));
         }
 
-        Ok(
-            OrganizationMember::load(database, organization_id, user.id)
-                .await?
-                .map(|member| member.role),
-        )
+        Ok(OrganizationMember::load(database, organization_id, user.id)
+            .await?
+            .map(|member| member.role))
     }
 }
 

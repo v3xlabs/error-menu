@@ -10,8 +10,8 @@ use crate::http::api::{
     missing_organization, missing_user, organization_access,
 };
 use crate::http::auth::CurrentUser;
-use crate::organization::OrganizationSummary;
 use crate::organization::member::OrganizationMemberChange;
+use crate::organization::{OrganizationDeletion, OrganizationSummary};
 use crate::prelude::*;
 
 pub struct OrganizationApi {
@@ -21,13 +21,14 @@ pub struct OrganizationApi {
 #[OpenApi]
 impl OrganizationApi {
     #[oai(path = "/orgs", method = "get")]
-    async fn list_organizations(&self, CurrentUser(user): CurrentUser) -> ListOrganizationsResponse {
+    async fn list_organizations(
+        &self,
+        CurrentUser(user): CurrentUser,
+    ) -> ListOrganizationsResponse {
         match Organization::summaries_for(&self.state.database, &user).await {
-            Ok(summaries) => {
-                ListOrganizationsResponse::Found(Json(OrganizationsOutput {
-                    organizations: summaries.into_iter().map(organization_output).collect(),
-                }))
-            }
+            Ok(summaries) => ListOrganizationsResponse::Found(Json(OrganizationsOutput {
+                organizations: summaries.into_iter().map(organization_output).collect(),
+            })),
             Err(error) => ListOrganizationsResponse::Failed(Json(Error {
                 message: error.to_string(),
             })),
@@ -50,7 +51,11 @@ impl OrganizationApi {
                 message: "organization name is empty".to_owned(),
             }));
         }
-        let description = input.description.as_deref().map(str::trim).filter(|description| !description.is_empty());
+        let description = input
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|description| !description.is_empty());
 
         match Organization::create(&self.state.database, user.id, name, description).await {
             Ok(organization) => CreateOrganizationResponse::Created(Json(OrganizationOutput {
@@ -107,7 +112,11 @@ impl OrganizationApi {
                 message: "organization name is empty".to_owned(),
             }));
         }
-        let description = input.description.as_deref().map(str::trim).filter(|description| !description.is_empty());
+        let description = input
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|description| !description.is_empty());
 
         match organization
             .describe(&self.state.database, name, description)
@@ -252,6 +261,55 @@ impl OrganizationApi {
             })),
         }
     }
+
+    #[oai(path = "/orgs/:organization_id", method = "delete")]
+    async fn delete_organization(
+        &self,
+        CurrentUser(user): CurrentUser,
+        organization_id: Path<String>,
+    ) -> DeleteOrganizationResponse {
+        let organization_id = match organization_id.0.parse::<Id<Organization>>() {
+            Ok(organization_id) => organization_id,
+            Err(error) => {
+                return DeleteOrganizationResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
+        };
+        let organization = match organization_access(
+            &self.state,
+            &user,
+            organization_id,
+            OrganizationPermission::Owner,
+        )
+        .await
+        {
+            OrganizationAccess::Allowed { organization, .. } => organization,
+            OrganizationAccess::Forbidden => {
+                return DeleteOrganizationResponse::Forbidden(Json(forbidden()));
+            }
+            OrganizationAccess::Missing => {
+                return DeleteOrganizationResponse::Missing(Json(missing_organization()));
+            }
+            OrganizationAccess::Failed(message) => {
+                return DeleteOrganizationResponse::Failed(Json(Error { message }));
+            }
+        };
+        match organization.delete(&self.state.database).await {
+            Ok(OrganizationDeletion::Deleted) => DeleteOrganizationResponse::Deleted,
+            Ok(OrganizationDeletion::HoldsProjects(held)) => {
+                DeleteOrganizationResponse::Invalid(Json(Error {
+                    message: format!(
+                        "the organization still holds {held} {}, so empty it first",
+                        if held == 1 { "project" } else { "projects" }
+                    ),
+                }))
+            }
+            Err(error) => DeleteOrganizationResponse::Failed(Json(Error {
+                message: error.to_string(),
+            })),
+        }
+    }
 }
 
 impl OrganizationApi {
@@ -303,16 +361,19 @@ impl OrganizationApi {
             OrganizationAccess::Missing => Err(OrganizationMembersResponse::Missing(Json(
                 missing_organization(),
             ))),
-            OrganizationAccess::Failed(message) => Err(OrganizationMembersResponse::Failed(Json(
-                Error { message },
-            ))),
+            OrganizationAccess::Failed(message) => {
+                Err(OrganizationMembersResponse::Failed(Json(Error { message })))
+            }
         }
     }
 
     async fn members(&self, organization_id: Id<Organization>) -> OrganizationMembersResponse {
         match OrganizationMember::list(&self.state.database, organization_id).await {
             Ok(members) => OrganizationMembersResponse::Found(Json(OrganizationMembersOutput {
-                members: members.into_iter().map(organization_member_output).collect(),
+                members: members
+                    .into_iter()
+                    .map(organization_member_output)
+                    .collect(),
             })),
             Err(error) => OrganizationMembersResponse::Failed(Json(Error {
                 message: error.to_string(),
@@ -409,6 +470,23 @@ enum CreateOrganizationResponse {
     Unauthenticated(Json<Error>),
     #[oai(status = 403)]
     Forbidden(Json<Error>),
+    #[oai(status = 500)]
+    Failed(Json<Error>),
+}
+
+#[allow(dead_code)]
+#[derive(ApiResponse)]
+enum DeleteOrganizationResponse {
+    #[oai(status = 204)]
+    Deleted,
+    #[oai(status = 400)]
+    Invalid(Json<Error>),
+    #[oai(status = 401)]
+    Unauthenticated(Json<Error>),
+    #[oai(status = 403)]
+    Forbidden(Json<Error>),
+    #[oai(status = 404)]
+    Missing(Json<Error>),
     #[oai(status = 500)]
     Failed(Json<Error>),
 }

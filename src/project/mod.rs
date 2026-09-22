@@ -3,6 +3,7 @@ pub mod member;
 pub mod person;
 pub mod snapshot;
 pub mod subject;
+pub mod transfer;
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -286,16 +287,72 @@ impl Project {
         Ok(())
     }
 
-    pub async fn move_to(
+    /// Moves the project, and records where it came from in the same transaction, so a
+    /// reader can never find a project in an organization with nothing saying how it got
+    /// there.
+    pub async fn transfer(
         &self,
         database: &Database,
-        organization_id: Id<Organization>,
+        from: &Organization,
+        to: &Organization,
+        moved_by: Id<User>,
     ) -> Result<(), DatabaseError> {
+        let id: Id<ProjectTransfer> = database.ids.next();
+        let moved_at = Timestamp::now();
+        let mut transaction = database.write().await?;
         sqlx::query("UPDATE projects SET organization_id = ? WHERE id = ?")
-            .bind(organization_id.raw())
+            .bind(to.id.raw())
             .bind(self.id.raw())
-            .execute(&database.pool)
+            .execute(&mut *transaction)
             .await?;
+        ProjectTransfer::record(&mut transaction, id, self.id, from, to, moved_by, moved_at)
+            .await?;
+        transaction.commit().await?;
+
+        Ok(())
+    }
+
+    /// Deletes the project and everything keyed to it, deepest first.
+    ///
+    /// SQLite enforces no foreign key here: the pool sets `temp_store` and nothing else,
+    /// so a missed table leaves rows pointing at an id that no longer exists rather than
+    /// refusing the delete. The mirror on disk is deliberately left alone, because
+    /// `Mirror::open` keys it by remote URL and a second project may watch the same
+    /// remote.
+    pub async fn delete(&self, database: &Database) -> Result<(), DatabaseError> {
+        let project_id = self.id.raw();
+        let mut transaction = database.write().await?;
+        for statement in [
+            "DELETE FROM findings WHERE run_id IN (SELECT r.id FROM runs r \
+             JOIN snapshots n ON n.id = r.snapshot_id \
+             JOIN subjects s ON s.id = n.subject_id WHERE s.project_id = ?)",
+            "DELETE FROM signals WHERE run_id IN (SELECT r.id FROM runs r \
+             JOIN snapshots n ON n.id = r.snapshot_id \
+             JOIN subjects s ON s.id = n.subject_id WHERE s.project_id = ?)",
+            "DELETE FROM runs WHERE id IN (SELECT r.id FROM runs r \
+             JOIN snapshots n ON n.id = r.snapshot_id \
+             JOIN subjects s ON s.id = n.subject_id WHERE s.project_id = ?)",
+            "DELETE FROM check_runs WHERE snapshot_id IN (SELECT n.id FROM snapshots n \
+             JOIN subjects s ON s.id = n.subject_id WHERE s.project_id = ?)",
+            "DELETE FROM snapshot_people WHERE snapshot_id IN (SELECT n.id FROM snapshots n \
+             JOIN subjects s ON s.id = n.subject_id WHERE s.project_id = ?)",
+            "DELETE FROM commit_analyses WHERE project_id = ?",
+            "DELETE FROM snapshots WHERE id IN (SELECT n.id FROM snapshots n \
+             JOIN subjects s ON s.id = n.subject_id WHERE s.project_id = ?)",
+            "DELETE FROM issues WHERE project_id = ?",
+            "DELETE FROM subjects WHERE project_id = ?",
+            "DELETE FROM jobs WHERE project_id = ?",
+            "DELETE FROM project_analyzers WHERE project_id = ?",
+            "DELETE FROM project_members WHERE project_id = ?",
+            "DELETE FROM project_transfers WHERE project_id = ?",
+            "DELETE FROM projects WHERE id = ?",
+        ] {
+            sqlx::query(statement)
+                .bind(project_id)
+                .execute(&mut *transaction)
+                .await?;
+        }
+        transaction.commit().await?;
 
         Ok(())
     }

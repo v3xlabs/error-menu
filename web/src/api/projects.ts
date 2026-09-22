@@ -7,6 +7,7 @@ export type Analysis = components["schemas"]["AnalysisOutput"];
 export type Discovery = components["schemas"]["DiscoveryOutput"];
 type AnalyzeProject = components["schemas"]["AnalyzeProject"];
 type SetProjectAnalyzers = components["schemas"]["SetProjectAnalyzers"];
+export type ProjectTransfer = components["schemas"]["ProjectTransferOutput"];
 
 export type Result<Value> = { ok: true; value: Value; } | { ok: false; message: string; };
 
@@ -97,6 +98,44 @@ export const moveProject = async (projectId: string, organizationId: string): Pr
   });
 
   if (response.status === 200) return { ok: true, value: response.data };
+
+  switch (response.status) {
+    case 400:
+    case 401:
+    case 403:
+    case 404:
+    case 500: {
+      return { ok: false, message: response.data.message };
+    }
+    default: {
+      return failed(response.status);
+    }
+  }
+};
+
+export const listProjectTransfers = async (projectId: string): Promise<Result<readonly ProjectTransfer[]>> => {
+  const response = await api("/projects/{project_id}/transfers", "get", { path: { project_id: projectId } });
+
+  if (response.status === 200) return { ok: true, value: response.data.transfers };
+
+  switch (response.status) {
+    case 400:
+    case 401:
+    case 403:
+    case 404:
+    case 500: {
+      return { ok: false, message: response.data.message };
+    }
+    default: {
+      return failed(response.status);
+    }
+  }
+};
+
+export const deleteProject = async (projectId: string): Promise<Result<undefined>> => {
+  const response = await api("/projects/{project_id}", "delete", { path: { project_id: projectId } });
+
+  if (response.status === 204) return { ok: true, value: undefined };
 
   switch (response.status) {
     case 400:

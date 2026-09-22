@@ -12,8 +12,9 @@ use crate::forge::ForgeKind;
 use crate::http::MOUNT;
 use crate::http::api::member::ProjectRoleOutput;
 use crate::http::api::{
-    Error, OrganizationAccess, OrganizationPermission, ProjectAccess, ProjectPermission, forbidden,
-    missing_organization, missing_project, organization_access, project_access,
+    CustodyAccess, Error, OrganizationAccess, OrganizationPermission, ProjectAccess,
+    ProjectPermission, custody_access, forbidden, missing_organization, missing_project,
+    organization_access, project_access,
 };
 use crate::http::auth::CurrentUser;
 use crate::prelude::*;
@@ -280,20 +281,31 @@ impl ProjectApi {
                 }));
             }
         };
-        let project =
-            match project_access(&self.state, &user, project_id, ProjectPermission::Owner).await {
-                ProjectAccess::Allowed { project, .. } => project,
-                ProjectAccess::Forbidden => {
-                    return GetProjectResponse::Forbidden(Json(forbidden()));
-                }
-                ProjectAccess::Missing => {
-                    return GetProjectResponse::Missing(Json(missing_project()));
-                }
-                ProjectAccess::Failed(message) => {
-                    return GetProjectResponse::Failed(Json(Error { message }));
-                }
-            };
-        match organization_access(
+        let (project, from) = match custody_access(&self.state, &user, project_id).await {
+            CustodyAccess::Allowed {
+                project,
+                organization,
+            } => (project, organization),
+            CustodyAccess::Forbidden => {
+                return GetProjectResponse::Forbidden(Json(Error {
+                    message: "moving a project needs an owner grant on the organization \
+                              that holds it"
+                        .to_owned(),
+                }));
+            }
+            CustodyAccess::Missing => {
+                return GetProjectResponse::Missing(Json(missing_project()));
+            }
+            CustodyAccess::Failed(message) => {
+                return GetProjectResponse::Failed(Json(Error { message }));
+            }
+        };
+        if project.organization_id == organization_id {
+            return GetProjectResponse::Invalid(Json(Error {
+                message: "the project is already in that organization".to_owned(),
+            }));
+        }
+        let to = match organization_access(
             &self.state,
             &user,
             organization_id,
@@ -301,9 +313,11 @@ impl ProjectApi {
         )
         .await
         {
-            OrganizationAccess::Allowed { .. } => {}
+            OrganizationAccess::Allowed { organization, .. } => organization,
             OrganizationAccess::Forbidden => {
-                return GetProjectResponse::Forbidden(Json(forbidden()));
+                return GetProjectResponse::Forbidden(Json(Error {
+                    message: "the destination organization needs an owner grant".to_owned(),
+                }));
             }
             OrganizationAccess::Missing => {
                 return GetProjectResponse::Missing(Json(missing_organization()));
@@ -311,14 +325,93 @@ impl ProjectApi {
             OrganizationAccess::Failed(message) => {
                 return GetProjectResponse::Failed(Json(Error { message }));
             }
-        }
-        if let Err(error) = project.move_to(&self.state.database, organization_id).await {
+        };
+        if let Err(error) = project
+            .transfer(&self.state.database, &from, &to, user.id)
+            .await
+        {
             return GetProjectResponse::Failed(Json(Error {
                 message: error.to_string(),
             }));
         }
 
         project_response(&self.state.database, project_id, ProjectRole::Owner).await
+    }
+
+    /// Owner only, because the history names organizations the reader may hold no grant
+    /// on, and it sits inside the owner's settings dialog.
+    #[oai(path = "/projects/:project_id/transfers", method = "get")]
+    async fn project_transfers(
+        &self,
+        CurrentUser(user): CurrentUser,
+        project_id: Path<String>,
+    ) -> ProjectTransfersResponse {
+        let project_id = match project_id.0.parse::<Id<Project>>() {
+            Ok(project_id) => project_id,
+            Err(error) => {
+                return ProjectTransfersResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
+        };
+        match project_access(&self.state, &user, project_id, ProjectPermission::Owner).await {
+            ProjectAccess::Allowed { .. } => {}
+            ProjectAccess::Forbidden => {
+                return ProjectTransfersResponse::Forbidden(Json(forbidden()));
+            }
+            ProjectAccess::Missing => {
+                return ProjectTransfersResponse::Missing(Json(missing_project()));
+            }
+            ProjectAccess::Failed(message) => {
+                return ProjectTransfersResponse::Failed(Json(Error { message }));
+            }
+        }
+        match ProjectTransfer::for_project(&self.state.database, project_id).await {
+            Ok(transfers) => ProjectTransfersResponse::Found(Json(ProjectTransfersOutput {
+                transfers: transfers.into_iter().map(transfer_output).collect(),
+            })),
+            Err(error) => ProjectTransfersResponse::Failed(Json(Error {
+                message: error.to_string(),
+            })),
+        }
+    }
+
+    #[oai(path = "/projects/:project_id", method = "delete")]
+    async fn delete_project(
+        &self,
+        CurrentUser(user): CurrentUser,
+        project_id: Path<String>,
+    ) -> DeleteProjectResponse {
+        let project_id = match project_id.0.parse::<Id<Project>>() {
+            Ok(project_id) => project_id,
+            Err(error) => {
+                return DeleteProjectResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
+        };
+        let project = match custody_access(&self.state, &user, project_id).await {
+            CustodyAccess::Allowed { project, .. } => project,
+            CustodyAccess::Forbidden => {
+                return DeleteProjectResponse::Forbidden(Json(Error {
+                    message: "deleting a project needs an owner grant on the organization \
+                              that holds it"
+                        .to_owned(),
+                }));
+            }
+            CustodyAccess::Missing => {
+                return DeleteProjectResponse::Missing(Json(missing_project()));
+            }
+            CustodyAccess::Failed(message) => {
+                return DeleteProjectResponse::Failed(Json(Error { message }));
+            }
+        };
+        match project.delete(&self.state.database).await {
+            Ok(()) => DeleteProjectResponse::Deleted,
+            Err(error) => DeleteProjectResponse::Failed(Json(Error {
+                message: error.to_string(),
+            })),
+        }
     }
 }
 
@@ -410,6 +503,21 @@ struct CreateProject {
 #[derive(Debug, Object)]
 struct MoveProject {
     organization_id: String,
+}
+
+#[derive(Debug, Object)]
+struct ProjectTransferOutput {
+    transfer_id: String,
+    from_organization_name: String,
+    to_organization_name: String,
+    moved_by: String,
+    moved_by_name: String,
+    moved_at: String,
+}
+
+#[derive(Debug, Object)]
+struct ProjectTransfersOutput {
+    transfers: Vec<ProjectTransferOutput>,
 }
 
 #[derive(Debug, Object)]
@@ -519,6 +627,51 @@ pub enum GetProjectResponse {
     Missing(Json<Error>),
     #[oai(status = 500)]
     Failed(Json<Error>),
+}
+
+#[allow(dead_code)]
+#[derive(ApiResponse)]
+enum ProjectTransfersResponse {
+    #[oai(status = 200)]
+    Found(Json<ProjectTransfersOutput>),
+    #[oai(status = 400)]
+    Invalid(Json<Error>),
+    #[oai(status = 401)]
+    Unauthenticated(Json<Error>),
+    #[oai(status = 403)]
+    Forbidden(Json<Error>),
+    #[oai(status = 404)]
+    Missing(Json<Error>),
+    #[oai(status = 500)]
+    Failed(Json<Error>),
+}
+
+#[allow(dead_code)]
+#[derive(ApiResponse)]
+enum DeleteProjectResponse {
+    #[oai(status = 204)]
+    Deleted,
+    #[oai(status = 400)]
+    Invalid(Json<Error>),
+    #[oai(status = 401)]
+    Unauthenticated(Json<Error>),
+    #[oai(status = 403)]
+    Forbidden(Json<Error>),
+    #[oai(status = 404)]
+    Missing(Json<Error>),
+    #[oai(status = 500)]
+    Failed(Json<Error>),
+}
+
+fn transfer_output(transfer: ProjectTransfer) -> ProjectTransferOutput {
+    ProjectTransferOutput {
+        transfer_id: transfer.id.encode(),
+        from_organization_name: transfer.from_organization_name,
+        to_organization_name: transfer.to_organization_name,
+        moved_by: transfer.moved_by.encode(),
+        moved_by_name: transfer.moved_by_name,
+        moved_at: transfer.moved_at.to_string(),
+    }
 }
 
 pub async fn project_response(

@@ -96,6 +96,14 @@ new endpoint gets the rule by calling one of those rather than by repeating it.
 per row. That duplication is the sharp edge of this design: a change to who may see a project has
 to land in both places or the project list and the project page will disagree.
 
+Custody is a separate question from access. Changing which organization holds a project, or
+deleting the project, resolves through `custody_access`, which requires an owner grant on
+the organization that holds it. A project grant is handed out one repository at a time, and
+anyone who may create an organization could otherwise move a project into one of their own.
+A transfer is also the only write here that changes what `ProjectRole::for_user` answers for
+a caller whose own grants never changed, which is why `Project::transfer` records the move
+in the same transaction.
+
 ## Why no broker, ever
 
 Kafka, RabbitMQ, Redis and BullMQ all solve throughput. Throughput is not our problem. If the
