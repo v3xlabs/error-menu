@@ -14,6 +14,38 @@ type ProjectsState
     | { phase: "loaded"; projects: readonly Project[]; }
     | { phase: "error"; message: string; };
 
+type OrganizationGroup = {
+  organizationId: string;
+  organizationName: string;
+  projects: Project[];
+};
+
+const groupByOrganization = (projects: readonly Project[]): readonly OrganizationGroup[] => {
+  const groups: OrganizationGroup[] = [];
+  const byOrganization = new Map<string, OrganizationGroup>();
+
+  for (const project of projects) {
+    const group = byOrganization.get(project.organization_id);
+
+    if (group === undefined) {
+      const created = {
+        organizationId: project.organization_id,
+        organizationName: project.organization_name,
+        projects: [project],
+      };
+
+      byOrganization.set(project.organization_id, created);
+      groups.push(created);
+
+      continue;
+    }
+
+    group.projects.push(project);
+  }
+
+  return groups;
+};
+
 const renderProjects = (state: ProjectsState): JSX.Element => {
   switch (state.phase) {
     case "loading": {
@@ -28,27 +60,38 @@ const renderProjects = (state: ProjectsState): JSX.Element => {
     case "loaded": {
       return (
         <Show when={state.projects.length > 0} fallback={<p class="rounded-lg border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-500">No projects yet.</p>}>
-          <ul class="divide-y divide-slate-200 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
-            <For each={state.projects}>
-              {project => (
-                <li>
-                  <a href={`/projects/${project.project_id}`} class="flex items-center justify-between gap-4 px-4 py-3 hover:bg-slate-100 dark:hover:bg-slate-900">
-                    <ProjectMark project={project} size={32} />
-                    <div class="min-w-0 flex-1">
-                      <p class="text-sm font-medium text-slate-900 dark:text-slate-100">{project.name}</p>
-                      <p class="truncate text-xs text-slate-500 dark:text-slate-500">{project.remote_url}</p>
-                    </div>
-                    <Show
-                      when={project.default_branch}
-                      fallback={<span class="text-xs text-slate-500 dark:text-slate-500">No default-branch scan</span>}
-                    >
-                      {analysis => <AnalyzerRing entries={analysis().analyzers} />}
-                    </Show>
-                  </a>
-                </li>
+          <div class="space-y-6">
+            <For each={groupByOrganization(state.projects)}>
+              {group => (
+                <section class="space-y-2">
+                  <h2 class="text-sm font-semibold text-slate-700 dark:text-slate-300">
+                    <a href={`/orgs/${group.organizationId}`} class="hover:underline">{group.organizationName}</a>
+                  </h2>
+                  <ul class="divide-y divide-slate-200 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+                    <For each={group.projects}>
+                      {project => (
+                        <li>
+                          <a href={`/projects/${project.project_id}`} class="flex items-center justify-between gap-4 px-4 py-3 hover:bg-slate-100 dark:hover:bg-slate-900">
+                            <ProjectMark project={project} size={32} />
+                            <div class="min-w-0 flex-1">
+                              <p class="text-sm font-medium text-slate-900 dark:text-slate-100">{project.name}</p>
+                              <p class="truncate text-xs text-slate-500 dark:text-slate-500">{project.remote_url}</p>
+                            </div>
+                            <Show
+                              when={project.default_branch}
+                              fallback={<span class="text-xs text-slate-500 dark:text-slate-500">No default-branch scan</span>}
+                            >
+                              {analysis => <AnalyzerRing entries={analysis().analyzers} />}
+                            </Show>
+                          </a>
+                        </li>
+                      )}
+                    </For>
+                  </ul>
+                </section>
               )}
             </For>
-          </ul>
+          </div>
         </Show>
       );
     }

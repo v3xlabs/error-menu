@@ -4,7 +4,9 @@ use sqlx::sqlite::SqliteRow;
 use crate::database::codec::{DecodeRow, FromStored, StoredAs};
 use crate::prelude::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Declaration order is privilege order: `Ord` is what resolves a caller who holds both an
+/// organization grant and a project grant. Reordering these variants inverts that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ProjectRole {
     Viewer,
     Operator,
@@ -35,26 +37,24 @@ impl FromStored for ProjectRole {
 }
 
 impl ProjectRole {
-    pub const fn can_scan(self) -> bool {
-        matches!(self, Self::Operator | Self::Owner)
-    }
-
-    pub const fn can_manage(self) -> bool {
-        matches!(self, Self::Owner)
-    }
-
+    /// The grant a caller holds on one project: the higher of a direct project grant and
+    /// the grant inherited from the organization that owns the project.
     pub async fn for_user(
         database: &Database,
         user: &User,
         project_id: Id<Project>,
     ) -> Result<Option<ProjectRole>, DatabaseError> {
-        match user.role {
-            UserRole::Admin => Ok(Some(ProjectRole::Owner)),
-            UserRole::Guest => Ok(None),
-            UserRole::Member => Ok(ProjectMember::load(database, project_id, user.id)
-                .await?
-                .map(|member| member.role)),
+        if user.role == UserRole::Admin {
+            return Ok(Some(ProjectRole::Owner));
         }
+        let direct = ProjectMember::load(database, project_id, user.id)
+            .await?
+            .map(|member| member.role);
+        let inherited = OrganizationMember::role_for_project(database, project_id, user.id)
+            .await?
+            .map(ProjectRole::from);
+
+        Ok(direct.max(inherited))
     }
 }
 

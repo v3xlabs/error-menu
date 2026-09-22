@@ -3,6 +3,8 @@ import { createRouter, defineRoute } from "@solidjs/router";
 import { AdminPage } from "../pages/AdminPage";
 import { DocumentationPage } from "../pages/DocumentationPage";
 import { HealthPage } from "../pages/HealthPage";
+import { OrganizationPage } from "../pages/OrganizationPage";
+import { OrganizationsPage } from "../pages/OrganizationsPage";
 import { ProjectPage } from "../pages/ProjectPage";
 import { ProjectsPage } from "../pages/ProjectsPage";
 import { QueuePage } from "../pages/QueuePage";
@@ -15,6 +17,8 @@ export const Router = createRouter({
     defineRoute({ path: "/queue", component: QueuePage }),
     defineRoute({ path: "/docs", component: DocumentationPage }),
     defineRoute({ path: "/health", component: HealthPage }),
+    defineRoute({ path: "/orgs", component: OrganizationsPage }),
+    defineRoute({ path: "/orgs/:organizationId", component: OrganizationPage }),
     defineRoute({ path: "/projects/:projectId", component: ProjectPage }),
     defineRoute({ path: "/projects/:projectId/:kind/:key", component: SubjectPage }),
   ],

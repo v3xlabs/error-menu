@@ -13,7 +13,9 @@ use poem::{Endpoint, EndpointExt, Route};
 use poem_openapi::OpenApiService;
 
 use crate::app::AppState;
-use crate::http::api::{analysis, health, job, member, project, repository, token, user};
+use crate::http::api::{
+    analysis, health, job, member, organization, project, repository, token, user,
+};
 
 const TITLE: &str = "error.menu";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -38,6 +40,9 @@ pub fn routes(
                 state: Arc::clone(&state),
             },
             member::MemberApi {
+                state: Arc::clone(&state),
+            },
+            organization::OrganizationApi {
                 state: Arc::clone(&state),
             },
             repository::RepositoryApi {

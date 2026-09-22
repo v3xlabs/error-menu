@@ -26,7 +26,15 @@ export const ProjectHeader = (properties: {
       <div class="flex min-w-0 flex-1 items-start gap-3">
         <ProjectMark project={properties.project} size={40} />
         <div class="min-w-0">
-          <h1 class="text-lg font-semibold">{properties.project.name}</h1>
+          <div class="flex flex-wrap items-baseline gap-x-2">
+            <h1 class="text-lg font-semibold">{properties.project.name}</h1>
+            <a
+              href={`/orgs/${properties.project.organization_id}`}
+              class="text-sm text-slate-500 hover:underline dark:text-slate-400"
+            >
+              {properties.project.organization_name}
+            </a>
+          </div>
           <p class="truncate text-sm text-slate-500 dark:text-slate-500">{properties.project.remote_url}</p>
           <Show
             when={properties.project.description}

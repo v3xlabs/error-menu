@@ -12,12 +12,12 @@ use crate::forge::ForgeKind;
 use crate::http::MOUNT;
 use crate::http::api::member::ProjectRoleOutput;
 use crate::http::api::{
-    Error, ProjectAccess, ProjectPermission, can_create_project, forbidden, missing_project,
-    project_access,
+    Error, OrganizationAccess, OrganizationPermission, ProjectAccess, ProjectPermission, forbidden,
+    missing_organization, missing_project, organization_access, project_access,
 };
 use crate::http::auth::CurrentUser;
 use crate::prelude::*;
-use crate::project::{ProjectAnalyzerTone, ProjectBranchSummary};
+use crate::project::{NewProject, ProjectAnalyzerTone, ProjectBranchSummary};
 
 pub struct ProjectApi {
     pub state: Arc<AppState>,
@@ -40,6 +40,7 @@ impl ProjectApi {
             .map(|summary| {
                 build_project_output(
                     summary.project,
+                    summary.organization_name,
                     summary.viewer_role,
                     summary.analyzers,
                     summary.default_branch.map(branch_output),
@@ -61,10 +62,34 @@ impl ProjectApi {
         CurrentUser(user): CurrentUser,
         input: Json<CreateProject>,
     ) -> CreateProjectResponse {
-        if !can_create_project(&user) {
-            return CreateProjectResponse::Forbidden(Json(forbidden()));
-        }
         let input = input.0;
+        let organization_id = match input.organization_id.parse::<Id<Organization>>() {
+            Ok(organization_id) => organization_id,
+            Err(error) => {
+                return CreateProjectResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
+        };
+        match organization_access(
+            &self.state,
+            &user,
+            organization_id,
+            OrganizationPermission::Owner,
+        )
+        .await
+        {
+            OrganizationAccess::Allowed { .. } => {}
+            OrganizationAccess::Forbidden => {
+                return CreateProjectResponse::Forbidden(Json(forbidden()));
+            }
+            OrganizationAccess::Missing => {
+                return CreateProjectResponse::Invalid(Json(missing_organization()));
+            }
+            OrganizationAccess::Failed(message) => {
+                return CreateProjectResponse::Failed(Json(Error { message }));
+            }
+        }
         let remote = match RemoteUrl::new(&input.remote_url) {
             Ok(remote) => remote,
             Err(error) => {
@@ -87,12 +112,15 @@ impl ProjectApi {
             .collect::<Vec<_>>();
         let project = match Project::create(
             &self.state.database,
-            user.id,
-            input.name.trim(),
-            remote,
-            input.forge.unwrap_or(Forge::Auto).into_kind(),
-            input.uses_default_analyzers,
-            &analyzers,
+            NewProject {
+                organization_id,
+                owner_id: user.id,
+                name: input.name.trim(),
+                remote,
+                forge_kind: input.forge.unwrap_or(Forge::Auto).into_kind(),
+                uses_default_analyzers: input.uses_default_analyzers,
+                analyzers: &analyzers,
+            },
         )
         .await
         {
@@ -228,6 +256,70 @@ impl ProjectApi {
 
         project_response(&self.state.database, project_id, ProjectRole::Owner).await
     }
+
+    #[oai(path = "/projects/:project_id/organization", method = "put")]
+    async fn move_project(
+        &self,
+        CurrentUser(user): CurrentUser,
+        project_id: Path<String>,
+        input: Json<MoveProject>,
+    ) -> GetProjectResponse {
+        let project_id = match project_id.0.parse::<Id<Project>>() {
+            Ok(project_id) => project_id,
+            Err(error) => {
+                return GetProjectResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
+        };
+        let organization_id = match input.0.organization_id.parse::<Id<Organization>>() {
+            Ok(organization_id) => organization_id,
+            Err(error) => {
+                return GetProjectResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
+        };
+        let project =
+            match project_access(&self.state, &user, project_id, ProjectPermission::Owner).await {
+                ProjectAccess::Allowed { project, .. } => project,
+                ProjectAccess::Forbidden => {
+                    return GetProjectResponse::Forbidden(Json(forbidden()));
+                }
+                ProjectAccess::Missing => {
+                    return GetProjectResponse::Missing(Json(missing_project()));
+                }
+                ProjectAccess::Failed(message) => {
+                    return GetProjectResponse::Failed(Json(Error { message }));
+                }
+            };
+        match organization_access(
+            &self.state,
+            &user,
+            organization_id,
+            OrganizationPermission::Owner,
+        )
+        .await
+        {
+            OrganizationAccess::Allowed { .. } => {}
+            OrganizationAccess::Forbidden => {
+                return GetProjectResponse::Forbidden(Json(forbidden()));
+            }
+            OrganizationAccess::Missing => {
+                return GetProjectResponse::Missing(Json(missing_organization()));
+            }
+            OrganizationAccess::Failed(message) => {
+                return GetProjectResponse::Failed(Json(Error { message }));
+            }
+        }
+        if let Err(error) = project.move_to(&self.state.database, organization_id).await {
+            return GetProjectResponse::Failed(Json(Error {
+                message: error.to_string(),
+            }));
+        }
+
+        project_response(&self.state.database, project_id, ProjectRole::Owner).await
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
@@ -307,11 +399,17 @@ impl Forge {
 #[derive(Debug, Object)]
 #[oai(skip_serializing_if_is_none)]
 struct CreateProject {
+    organization_id: String,
     name: String,
     remote_url: String,
     uses_default_analyzers: bool,
     analyzers: Vec<Analyzer>,
     forge: Option<Forge>,
+}
+
+#[derive(Debug, Object)]
+struct MoveProject {
+    organization_id: String,
 }
 
 #[derive(Debug, Object)]
@@ -325,6 +423,8 @@ struct SetProjectAnalyzers {
 #[oai(skip_serializing_if_is_none)]
 pub struct ProjectOutput {
     project_id: String,
+    organization_id: String,
+    organization_name: String,
     name: String,
     remote_url: String,
     uses_default_analyzers: bool,
@@ -451,13 +551,20 @@ async fn project_output(
     project: Project,
     viewer_role: ProjectRole,
 ) -> Result<ProjectOutput, DatabaseError> {
+    let organization = Organization::load(database, project.organization_id)
+        .await?
+        .ok_or_else(|| DatabaseError::Unreadable {
+            field: "projects.organization_id",
+            value: project.organization_id.encode(),
+        })?;
     let analyzers = project.effective_analyzers(database).await?;
 
-    build_project_output(project, viewer_role, analyzers, None)
+    build_project_output(project, organization.name, viewer_role, analyzers, None)
 }
 
 fn build_project_output(
     project: Project,
+    organization_name: String,
     viewer_role: ProjectRole,
     analyzers: Vec<String>,
     default_branch: Option<ProjectBranchOutput>,
@@ -471,6 +578,8 @@ fn build_project_output(
 
     Ok(ProjectOutput {
         project_id: project.id.encode(),
+        organization_id: project.organization_id.encode(),
+        organization_name,
         name: project.name,
         remote_url: project.remote.to_string(),
         uses_default_analyzers: project.uses_default_analyzers,
