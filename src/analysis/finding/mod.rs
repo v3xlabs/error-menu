@@ -63,6 +63,12 @@ pub enum Location {
         ecosystem: Ecosystem,
         name: String,
         version: String,
+        /// Absent for a finding recorded before origins were kept, which is why no link is
+        /// drawn for one.
+        origin: Option<PackageOrigin>,
+        /// What the lockfile claims the package hashes to, so a later read of the registry
+        /// can say whether the publisher agrees.
+        integrity: Option<String>,
     },
 }
 
@@ -79,6 +85,46 @@ pub enum Ecosystem {
     Cargo,
     Npm,
     Nix,
+}
+
+/// Where a locked package resolved from. A link is only honest when this says the package
+/// came from the ecosystem's own registry, so the answer is kept whole rather than reduced
+/// to a boolean.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum PackageOrigin {
+    PublicRegistry,
+    Registry { url: String },
+    Remote { url: String },
+    Local,
+}
+
+impl PackageOrigin {
+    pub fn reference(&self) -> Option<&str> {
+        match self {
+            Self::Registry { url } | Self::Remote { url } => Some(url),
+            Self::PublicRegistry | Self::Local => None,
+        }
+    }
+
+    fn decode(kind: &str, reference: Option<String>) -> Result<Self, DatabaseError> {
+        let unreadable = || DatabaseError::Unreadable {
+            field: "origin_kind",
+            value: kind.to_owned(),
+        };
+
+        match kind {
+            "public_registry" => Ok(Self::PublicRegistry),
+            "local" => Ok(Self::Local),
+            "registry" => Ok(Self::Registry {
+                url: reference.ok_or_else(unreadable)?,
+            }),
+            "remote" => Ok(Self::Remote {
+                url: reference.ok_or_else(unreadable)?,
+            }),
+            _ => Err(unreadable()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -118,7 +164,8 @@ impl Finding {
     ) -> Result<Vec<Finding>, DatabaseError> {
         let rows = sqlx::query(
             "SELECT f.id, f.issue_id, f.location_kind, f.file_path, f.line_start, f.line_end, f.movement, \
-                    f.ecosystem, f.package_name, f.package_version, f.severity, f.confidence, \
+                    f.ecosystem, f.package_name, f.package_version, f.origin_kind, f.origin_ref, \
+                    f.package_integrity, f.severity, f.confidence, \
                     f.attribution, f.title, f.detail, \
                     i.fingerprint, i.fingerprint_version, i.fingerprint_canonical \
              FROM findings f JOIN issues i ON i.id = f.issue_id \
@@ -163,6 +210,9 @@ pub struct EncodedLocation {
     pub ecosystem: Option<&'static str>,
     pub package_name: Option<String>,
     pub package_version: Option<String>,
+    pub origin_kind: Option<&'static str>,
+    pub origin_ref: Option<String>,
+    pub package_integrity: Option<String>,
 }
 
 impl Location {
@@ -176,12 +226,17 @@ impl Location {
                 ecosystem: None,
                 package_name: None,
                 package_version: None,
+                origin_kind: None,
+                origin_ref: None,
+                package_integrity: None,
             },
             Location::Package {
                 path,
                 ecosystem,
                 name,
                 version,
+                origin,
+                integrity,
             } => EncodedLocation {
                 kind: "package",
                 file_path: Some(path.as_str().to_owned()),
@@ -190,6 +245,12 @@ impl Location {
                 ecosystem: Some(ecosystem.stored()),
                 package_name: Some(name.clone()),
                 package_version: Some(version.clone()),
+                origin_kind: origin.as_ref().map(StoredAs::stored),
+                origin_ref: origin
+                    .as_ref()
+                    .and_then(PackageOrigin::reference)
+                    .map(str::to_owned),
+                package_integrity: integrity.clone(),
             },
         }
     }
@@ -213,17 +274,33 @@ impl DecodeRow for Location {
             }
             "package" => {
                 let path: String = row.try_get("file_path")?;
+                let origin_kind: Option<String> = row.try_get("origin_kind")?;
                 Ok(Location::Package {
                     path: RepoPath::from_stored(&path, "file_path")?,
                     ecosystem: Ecosystem::read(row, "ecosystem")?,
                     name: row.try_get("package_name")?,
                     version: row.try_get("package_version")?,
+                    origin: origin_kind
+                        .map(|kind| PackageOrigin::decode(&kind, row.try_get("origin_ref")?))
+                        .transpose()?,
+                    integrity: row.try_get("package_integrity")?,
                 })
             }
             other => Err(DatabaseError::Unreadable {
                 field: "location_kind",
                 value: other.to_owned(),
             }),
+        }
+    }
+}
+
+impl StoredAs for PackageOrigin {
+    fn stored(&self) -> &'static str {
+        match self {
+            PackageOrigin::PublicRegistry => "public_registry",
+            PackageOrigin::Registry { .. } => "registry",
+            PackageOrigin::Remote { .. } => "remote",
+            PackageOrigin::Local => "local",
         }
     }
 }

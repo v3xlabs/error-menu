@@ -4,7 +4,8 @@
 
 pub use crate::analysis::confidence::Confidence;
 pub use crate::analysis::finding::{
-    Attribution, Ecosystem, Finding, LineSpan, Location, NewFinding, Severity, VersionMovement,
+    Attribution, Ecosystem, Finding, LineSpan, Location, NewFinding, PackageOrigin, Severity,
+    VersionMovement,
 };
 pub use crate::analysis::signal::{NewSignal, Score, Signal, SignalKey, SignalValue};
 pub use crate::analysis::{Run, RunStatus};

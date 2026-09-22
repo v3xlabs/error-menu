@@ -8,6 +8,7 @@ pub mod organization;
 pub mod outbound;
 pub mod prelude;
 pub mod project;
+pub mod registry;
 pub mod trace;
 pub mod user;
 pub mod vcs;

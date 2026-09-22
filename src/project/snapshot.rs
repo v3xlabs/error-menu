@@ -281,6 +281,34 @@ impl Snapshot {
             .transpose()
     }
 
+    /// Snapshots of this project that recorded a package integrity and have not been
+    /// audited against the registry yet. The audit run is its own record that it happened,
+    /// so a snapshot leaves this list the moment one exists.
+    pub async fn awaiting_audit(
+        database: &Database,
+        project_id: Id<Project>,
+        audit: &str,
+    ) -> Result<Vec<Id<Snapshot>>, DatabaseError> {
+        let rows = sqlx::query(
+            "SELECT DISTINCT n.id FROM snapshots n \
+             JOIN subjects s ON s.id = n.subject_id \
+             JOIN runs r ON r.snapshot_id = n.id \
+             JOIN findings f ON f.run_id = r.id \
+             WHERE s.project_id = ? AND f.package_integrity IS NOT NULL \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM runs a WHERE a.snapshot_id = n.id AND a.analyzer = ? \
+               )",
+        )
+        .bind(project_id.raw())
+        .bind(audit)
+        .fetch_all(&database.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| Ok(Id::from_raw(row.try_get("id")?)))
+            .collect()
+    }
+
     pub async fn people(&self, database: &Database) -> Result<Vec<Person>, DatabaseError> {
         people_of(database, self.id).await
     }

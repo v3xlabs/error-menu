@@ -2714,7 +2714,7 @@ export interface components {
          *     refused" are different answers.
          * @enum {string}
          */
-        JobKindOutput: "discover";
+        JobKindOutput: "discover" | "package_facts";
         /** JobOutput */
         JobOutput: {
             job_id: string;
@@ -2769,11 +2769,40 @@ export interface components {
         OrganizationsOutput: {
             organizations: components["schemas"]["OrganizationOutput"][];
         };
+        /** PackageFactsOutput */
+        PackageFactsOutput: {
+            /** Format: uint64 */
+            size_bytes?: number;
+            /** Format: uint64 */
+            install_bytes?: number;
+            /** Format: uint32 */
+            dependency_count?: number;
+            /** Format: uint64 */
+            downloads_week?: number;
+            /** Format: uint32 */
+            vulnerabilities?: number;
+            /** Format: uint32 */
+            vulnerabilities_high?: number;
+            license?: string;
+            withdrawn?: string;
+        };
+        /**
+         * PackageLinksOutput
+         * @description Built on read and never stored. A URL is derived from the coordinate and the origin, so
+         *     a stored copy would be a second answer that ages.
+         */
+        PackageLinksOutput: {
+            registry?: string;
+            docs?: string;
+            source?: string;
+        };
         /** PackageOutput */
         PackageOutput: {
             ecosystem: components["schemas"]["EcosystemOutput"];
             name: string;
             version: string;
+            links: components["schemas"]["PackageLinksOutput"];
+            facts?: components["schemas"]["PackageFactsOutput"];
         };
         /**
          * PersonOutput

@@ -43,6 +43,25 @@ eight implemented analyzers. A custom project runs only its saved analyzer ident
 that existed before default selection was added remain custom projects, so their analyzer sets do
 not change during migration.
 
+## Registry facts
+
+No analyzer reads a package registry. A scan must not wait on somebody else's server, and
+what a registry says about `serde 1.0.200` is the same answer for every project that locks
+it, so `package_facts` is keyed by ecosystem, name and version alone and a `package-facts`
+job fills it after an analysis records package findings. Cargo facts come from the
+crates.io version and crate endpoints and the docs.rs status file. npm facts come from
+`registry.npmjs.org`, with install size and vulnerability counts from npmx.dev, which are
+the only two answers nothing else gives cheaply; those two are allowed to fail without
+failing the row, because npmx.dev does not document those routes. A flake input has no
+registry, so it is never fetched.
+
+`checksum-audit` is a run identifier rather than a selectable analyzer. It compares what a
+lockfile claims a package hashes to against what the publisher published, which needs the
+facts, which arrive after the analysis has finished. The facts job records it as its own
+run on the snapshot it audited, so the finding still belongs to exactly one run and no
+finished run is written to twice. It is absent from the default set and `evaluate` has no
+arm for it.
+
 ## Deferred work
 
 LLM review is not implemented. Link policy, link normalization, and link allow lists are also

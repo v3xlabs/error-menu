@@ -1,8 +1,11 @@
 use serde::Deserialize;
 
 use super::LockedPackage;
+use crate::prelude::*;
 
+const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
 const REGISTRY_PREFIX: &str = "registry+";
+const GIT_PREFIX: &str = "git+";
 
 pub(super) fn parse(
     text: &str,
@@ -13,17 +16,43 @@ pub(super) fn parse(
         .package
         .into_iter()
         .map(|package| LockedPackage {
-            // A package with no source is a workspace member, which is ordinary.
-            registered: package
-                .source
-                .as_ref()
-                .is_none_or(|source| source.starts_with(REGISTRY_PREFIX)),
+            origin: origin_of(package.source.as_deref()),
             name: package.name,
             version: package.version,
             source: package.source,
             integrity: package.checksum,
         })
         .collect())
+}
+
+fn origin_of(source: Option<&str>) -> PackageOrigin {
+    // A package with no source is a workspace member, which is ordinary.
+    let Some(source) = source else {
+        return PackageOrigin::Local;
+    };
+
+    if source == CRATES_IO {
+        return PackageOrigin::PublicRegistry;
+    }
+
+    if let Some(url) = source.strip_prefix(GIT_PREFIX) {
+        // A git source carries its branch as a query and its revision as a fragment, and
+        // neither belongs in a link to the repository.
+        let url = url.split(['?', '#']).next().unwrap_or(url);
+
+        return PackageOrigin::Remote {
+            url: url.to_owned(),
+        };
+    }
+
+    match source.strip_prefix(REGISTRY_PREFIX) {
+        Some(url) => PackageOrigin::Registry {
+            url: url.to_owned(),
+        },
+        None => PackageOrigin::Remote {
+            url: source.to_owned(),
+        },
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,20 +87,36 @@ checksum = \"aaa\"
 [[package]]
 name = \"helper\"
 version = \"0.1.0\"
-source = \"git+https://example.invalid/helper\"
+source = \"git+https://example.invalid/helper?branch=main#0f1e2d\"
 
 [[package]]
 name = \"error-menu\"
 version = \"0.1.0\"
+
+[[package]]
+name = \"inner\"
+version = \"2.0.0\"
+source = \"registry+https://packages.example.invalid/index\"
 ";
         let packages = parse(text).expect("parses");
 
-        assert_eq!(packages.len(), 3);
-        assert!(packages[0].registered);
+        assert_eq!(packages.len(), 4);
+        assert_eq!(packages[0].origin, PackageOrigin::PublicRegistry);
         assert_eq!(packages[0].integrity.as_deref(), Some("aaa"));
-        assert!(!packages[1].registered);
-        assert!(packages[2].registered);
+        assert_eq!(
+            packages[1].origin,
+            PackageOrigin::Remote {
+                url: "https://example.invalid/helper".to_owned()
+            }
+        );
+        assert_eq!(packages[2].origin, PackageOrigin::Local);
         assert_eq!(packages[2].source, None);
+        assert_eq!(
+            packages[3].origin,
+            PackageOrigin::Registry {
+                url: "https://packages.example.invalid/index".to_owned()
+            }
+        );
     }
 
     #[test]

@@ -41,7 +41,9 @@ impl Fingerprint {
 }
 
 /// Line spans are excluded because lines move. Package versions are excluded because a
-/// version bump that leaves the problem in place is the same problem.
+/// version bump that leaves the problem in place is the same problem. Origin and integrity
+/// are excluded for the same reason: a dependency that moves from a git pin to the registry
+/// is the same dependency, and one issue thread should follow it.
 fn encode_location(location: &Location) -> String {
     match location {
         Location::File { path, span: _ } => format!("file\0{path}"),
@@ -50,6 +52,8 @@ fn encode_location(location: &Location) -> String {
             ecosystem,
             name,
             version: _,
+            origin: _,
+            integrity: _,
         } => format!("package\0{path}\0{ecosystem:?}\0{name}"),
     }
 }
@@ -99,12 +103,18 @@ mod tests {
             ecosystem: Ecosystem::Cargo,
             name: "serde".to_owned(),
             version: "1.0.1".to_owned(),
+            origin: Some(PackageOrigin::PublicRegistry),
+            integrity: Some("aaa".to_owned()),
         };
         let after = Location::Package {
             path: RepoPath::new("Cargo.lock").expect("valid path"),
             ecosystem: Ecosystem::Cargo,
             name: "serde".to_owned(),
             version: "1.0.2".to_owned(),
+            origin: Some(PackageOrigin::Remote {
+                url: "https://example.invalid/serde".to_owned(),
+            }),
+            integrity: Some("bbb".to_owned()),
         };
         assert_eq!(
             Fingerprint::compute(&components(&before, "advisory")),

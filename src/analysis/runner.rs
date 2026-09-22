@@ -12,6 +12,7 @@ use crate::forge::ForgeMetadata;
 use crate::forge::reader::{ForgeReadError, ForgeReader};
 use crate::prelude::*;
 use crate::vcs::mirror::{ChangedFile, FileChange, Mirror, MirrorError};
+use crate::worker::queue::{Job, JobKind};
 
 const MAX_SECRET_SCAN_BYTES: u64 = 32 * 1024 * 1024;
 pub const DEFAULT_ANALYZERS: [&str; 8] = [
@@ -197,6 +198,7 @@ pub async fn run_target_in_mirror(
     }
 
     let mut completed = Vec::new();
+    let mut packages_seen = false;
     for analyzer in analyzers {
         let previous =
             Run::last_successful(&state.database, subject.id, &analyzer, snapshot.id).await?;
@@ -228,6 +230,9 @@ pub async fn run_target_in_mirror(
         };
         let finding_count = findings.len() as u64;
         let signal_count = signals.len() as u64;
+        packages_seen |= findings
+            .iter()
+            .any(|finding| matches!(finding.location, Location::Package { .. }));
         let run = Run::record(
             &state.database,
             NewRun {
@@ -248,6 +253,12 @@ pub async fn run_target_in_mirror(
         });
     }
     snapshot.mark_analysed(&state.database).await?;
+
+    // The registries are read on their own job: a scan must not wait on somebody else's
+    // server, and what they answer is the same for every project that locks the version.
+    if packages_seen {
+        Job::enqueue(&state.database, project.id, JobKind::PackageFacts).await?;
+    }
 
     Ok(Analysis {
         snapshot,

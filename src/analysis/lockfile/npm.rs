@@ -3,9 +3,11 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 use super::LockedPackage;
+use crate::prelude::*;
 
 const REGISTRY_PREFIX: &str = "https://registry.npmjs.org/";
 const NESTING: &str = "node_modules/";
+const GIT_PREFIXES: [&str; 4] = ["git+", "git:", "github:", "gitlab:"];
 
 /// Reads the `packages` map of a version 2 or 3 `package-lock.json`. A version 1 lockfile
 /// describes its tree in a different shape and is refused rather than read as empty: a
@@ -34,10 +36,7 @@ pub(super) fn parse(
             Some(LockedPackage {
                 name: name_of(&location).to_owned(),
                 version,
-                registered: entry
-                    .resolved
-                    .as_ref()
-                    .is_some_and(|resolved| resolved.starts_with(REGISTRY_PREFIX)),
+                origin: origin_of(entry.resolved.as_deref()),
                 source: entry.resolved,
                 integrity: entry.integrity,
             })
@@ -50,6 +49,36 @@ fn name_of(location: &str) -> &str {
     match location.rfind(NESTING) {
         Some(index) => &location[index + NESTING.len()..],
         None => location,
+    }
+}
+
+/// The resolved tarball says where the bytes came from. A package with no resolution is
+/// a workspace member the lockfile describes under its own key.
+fn origin_of(resolved: Option<&str>) -> PackageOrigin {
+    let Some(resolved) = resolved else {
+        return PackageOrigin::Local;
+    };
+
+    if resolved.starts_with(REGISTRY_PREFIX) {
+        return PackageOrigin::PublicRegistry;
+    }
+
+    if GIT_PREFIXES
+        .iter()
+        .any(|prefix| resolved.starts_with(prefix))
+    {
+        return PackageOrigin::Remote {
+            url: resolved.to_owned(),
+        };
+    }
+
+    // Any other tarball host is a registry we do not know, which is what a private
+    // registry looks like from here. The host is the part worth keeping.
+    match url::Url::parse(resolved) {
+        Ok(url) => PackageOrigin::Registry {
+            url: url.origin().ascii_serialization(),
+        },
+        Err(_) => PackageOrigin::Local,
     }
 }
 
@@ -103,14 +132,19 @@ mod tests {
             .iter()
             .find(|package| package.version == "1.3.0")
             .expect("the registry copy");
-        assert!(registered.registered);
+        assert_eq!(registered.origin, PackageOrigin::PublicRegistry);
         assert_eq!(registered.integrity.as_deref(), Some("sha512-aaa"));
 
         let elsewhere = packages
             .iter()
             .find(|package| package.version == "1.3.1")
             .expect("the other copy");
-        assert!(!elsewhere.registered);
+        assert_eq!(
+            elsewhere.origin,
+            PackageOrigin::Registry {
+                url: "https://example.invalid".to_owned()
+            }
+        );
     }
 
     #[test]

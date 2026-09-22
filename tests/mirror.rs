@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use error_menu::analysis::finding::{Ecosystem, Location, Severity};
+use error_menu::analysis::finding::{Ecosystem, Location, PackageOrigin, Severity};
 use error_menu::analysis::lockfile;
 use error_menu::vcs::mirror::{FileChange, Mirror, MirrorError};
 use error_menu::vcs::{CommitSha, RemoteUrl, RepoPath};
@@ -161,6 +161,8 @@ async fn the_gate_finds_the_swap_through_the_mirror_alone() {
             ecosystem: Ecosystem::Cargo,
             name: "serde".to_owned(),
             version: "1.0.1".to_owned(),
+            origin: Some(PackageOrigin::PublicRegistry),
+            integrity: Some("bbb".to_owned()),
         }
     );
 }

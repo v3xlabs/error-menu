@@ -81,6 +81,7 @@ impl JobApi {
 #[oai(rename_all = "snake_case")]
 enum JobKindOutput {
     Discover,
+    PackageFacts,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
@@ -134,6 +135,7 @@ fn job_output(job: Job) -> JobOutput {
         project_id: job.project_id.encode(),
         kind: match job.kind {
             crate::worker::queue::JobKind::Discover => JobKindOutput::Discover,
+            crate::worker::queue::JobKind::PackageFacts => JobKindOutput::PackageFacts,
         },
         state: match job.state {
             crate::worker::queue::JobState::Queued => JobStateOutput::Queued,
