@@ -46,11 +46,11 @@ export const PersonAvatar = (properties: PersonAvatarProperties) => {
                 width="24"
                 height="24"
                 loading="lazy"
-                class="size-6 rounded-full bg-slate-200 ring-2 ring-white dark:bg-slate-800 dark:ring-slate-900"
+                class="size-6 rounded-full bg-slate-200 ring-2 ring-surface dark:bg-slate-800"
               />
               <Show when={forgeOf(properties.person, properties.projectForge)}>
                 {forge => (
-                  <span class="absolute -right-0.5 -bottom-0.5 rounded-full bg-white p-px text-slate-700 dark:bg-slate-900 dark:text-slate-200">
+                  <span class="absolute -right-0.5 -bottom-0.5 rounded-full bg-surface p-px text-slate-700 dark:text-slate-200">
                     <ForgeMark forge={forge()} size={10} />
                   </span>
                 )}
@@ -59,14 +59,14 @@ export const PersonAvatar = (properties: PersonAvatarProperties) => {
           )}
         >
           {forge => (
-            <span class="flex size-6 items-center justify-center rounded-full bg-slate-900 text-white ring-2 ring-white dark:bg-slate-100 dark:text-slate-900 dark:ring-slate-900">
+            <span class="flex size-6 items-center justify-center rounded-full bg-slate-900 text-white ring-2 ring-surface dark:bg-slate-100 dark:text-slate-900">
               <ForgeMark forge={forge()} size={15} />
             </span>
           )}
         </Show>
       </HoverCard.Trigger>
       <HoverCard.Portal>
-        <HoverCard.Content class="z-50 w-72 rounded-lg border border-slate-200 bg-white p-4 shadow-lg dark:border-slate-700 dark:bg-slate-900">
+        <HoverCard.Content class="z-50 w-72 rounded-panel bg-surface p-4 shadow-lg">
           <HoverCard.Arrow />
           <div class="flex items-center gap-3">
             <Show
@@ -100,7 +100,7 @@ export const PersonAvatar = (properties: PersonAvatarProperties) => {
           <p class="mt-3 text-xs text-slate-600 dark:text-slate-300">{roles().join(" - ")}</p>
           <Show when={elsewhere()}>
             {others => (
-              <div class="mt-3 border-t border-slate-200 pt-3 dark:border-slate-700">
+              <div class="mt-3 border-t border-hairline pt-3">
                 <p class="text-xs font-medium tracking-wide text-slate-500 uppercase dark:text-slate-400">Also on</p>
                 <ul class="mt-1.5 space-y-1">
                   <For each={others().slice(0, OTHER_SUBJECT_LIMIT)}>

@@ -15,8 +15,8 @@ type BrowseState
 export const blobSource = (projectId: string, path: string): string =>
   `/api/projects/${projectId}/blob?path=${encodeURIComponent(path)}`;
 
-const SLOT = "flex size-20 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-950";
-const EMPTY_SLOT = "flex size-20 items-center justify-center rounded-lg border border-dashed border-slate-300 text-slate-400 hover:border-slate-400 hover:text-slate-600 dark:border-slate-600 dark:text-slate-500 dark:hover:border-slate-500 dark:hover:text-slate-300";
+const SLOT = "flex size-20 items-center justify-center rounded-panel bg-raised";
+const EMPTY_SLOT = "flex size-20 items-center justify-center rounded-panel bg-raised text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300";
 
 const Slot = (properties: {
   label: string;
@@ -54,13 +54,13 @@ const Slot = (properties: {
           type="button"
           aria-label={`Clear the ${properties.label} icon`}
           onClick={() => properties.onClear()}
-          class="absolute -top-1.5 -right-1.5 rounded-full border border-slate-200 bg-white p-0.5 text-slate-500 hover:text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400 dark:hover:text-slate-100"
+          class="absolute -top-1.5 -right-1.5 rounded-full bg-surface p-0.5 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100"
         >
           <FiX size={12} />
         </button>
       </Show>
       <Show when={properties.isActive}>
-        <span class="pointer-events-none absolute inset-0 rounded-lg ring-2 ring-slate-900 dark:ring-slate-100" />
+        <span class="pointer-events-none absolute inset-0 rounded-panel ring-2 ring-slate-900 dark:ring-slate-100" />
       </Show>
     </div>
     <p class="max-w-20 truncate font-mono text-[10px] text-slate-400 dark:text-slate-500">{properties.path}</p>
@@ -71,7 +71,7 @@ const Thumbnail = (properties: { projectId: string; path: string; label: string;
   <button
     type="button"
     onClick={() => properties.onPick()}
-    class="flex w-20 shrink-0 flex-col items-center gap-1 rounded-lg border border-slate-200 p-1.5 hover:border-slate-400 hover:bg-slate-50 dark:border-slate-700 dark:hover:border-slate-500 dark:hover:bg-slate-800"
+    class="flex w-20 shrink-0 flex-col items-center gap-1 rounded-panel bg-raised p-1.5 hover:bg-raised-hover"
   >
     <img src={blobSource(properties.projectId, properties.path)} alt="" class="h-10 w-full object-contain" />
     <span class="w-full truncate text-center text-[10px] text-slate-500 dark:text-slate-400">{properties.label}</span>
@@ -163,7 +163,7 @@ export const IconPicker = (properties: {
       </div>
 
       <Show when={isPicking()}>
-        <div class="space-y-3 rounded-lg border border-slate-200 p-3 dark:border-slate-800">
+        <div class="space-y-3 rounded-panel border border-hairline p-3">
           <p class="text-xs text-slate-500 dark:text-slate-400">
             {`Choosing the ${active()} icon.`}
           </p>
@@ -193,7 +193,7 @@ export const IconPicker = (properties: {
                 disabled={parent() === undefined}
                 onClick={() => browse(parent() ?? "")}
                 aria-label="Up one directory"
-                class="rounded border border-slate-200 p-1 text-slate-500 hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800"
+                class="rounded-control bg-raised p-1 text-slate-500 hover:bg-raised-hover disabled:opacity-40 dark:text-slate-400"
               >
                 <FiArrowLeft size={12} />
               </button>
@@ -205,7 +205,7 @@ export const IconPicker = (properties: {
             <Show when={browseError()}>
               {message => <p class="text-xs text-red-600 dark:text-red-400">{message()}</p>}
             </Show>
-            <ul class="max-h-56 divide-y divide-slate-100 overflow-y-auto rounded-md border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+            <ul class="max-h-56 divide-y divide-hairline overflow-y-auto">
               <For each={entries()} fallback={<li class="px-2 py-3 text-center text-xs text-slate-400 dark:text-slate-500">Nothing here.</li>}>
                 {entry => (
                   <li>
@@ -213,7 +213,7 @@ export const IconPicker = (properties: {
                       type="button"
                       disabled={!entry.is_directory && !entry.is_image}
                       onClick={() => (entry.is_directory ? browse(entry.path) : choose(entry.path))}
-                      class="flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs text-slate-700 hover:bg-slate-100 disabled:text-slate-300 disabled:hover:bg-transparent dark:text-slate-200 dark:hover:bg-slate-800 dark:disabled:text-slate-600"
+                      class="flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs text-slate-700 hover:bg-raised disabled:text-slate-300 disabled:hover:bg-transparent dark:text-slate-200 dark:disabled:text-slate-600"
                     >
                       <Show when={entry.is_directory} fallback={<FiImage size={12} />}>
                         <FiFolder size={12} />

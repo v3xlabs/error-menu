@@ -41,7 +41,7 @@ const FileRow = (properties: { file: RunFile; }) => {
 
   return (
     <li>
-      <div class="flex items-center gap-3 px-3 py-1.5">
+      <div class="flex items-center gap-3 px-3 py-2">
         <span class="flex shrink-0">
           <FileIcon kind={properties.file.kind} size={15} />
         </span>
@@ -52,7 +52,7 @@ const FileRow = (properties: { file: RunFile; }) => {
         <CountRow slots={properties.file.slots} />
         <CountBar slots={properties.file.slots} total={properties.file.total} />
       </div>
-      <ul class="space-y-0.5 px-3 pb-2 pl-9">
+      <ul class="space-y-0.5 px-3 pb-2.5 pl-9">
         <For each={shown()}>{finding => <FindingLine finding={finding} />}</For>
         <Show when={hidden()}>
           {count => (
@@ -118,7 +118,7 @@ export const AnalyzerCard = (properties: { run: AnalyzerRun; }) => {
   });
 
   return (
-    <div class="p-3">
+    <div class="p-4">
       <div class="min-w-0 space-y-2">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <span class="flex items-center gap-2">
@@ -149,7 +149,7 @@ export const AnalyzerCard = (properties: { run: AnalyzerRun; }) => {
           {detail => <p class="text-xs text-red-600 dark:text-red-400">{detail()}</p>}
         </Show>
         <Show when={breakdown().files.length > 0}>
-          <ul class="divide-y divide-slate-200 rounded-md border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+          <ul class="divide-y divide-hairline">
             <For each={breakdown().files}>{file => <FileRow file={file} />}</For>
           </ul>
         </Show>

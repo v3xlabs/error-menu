@@ -154,7 +154,7 @@ export const SubjectPage = () => {
 
         <Show when={mergedBy()}>
           {change => (
-            <p class="flex flex-wrap items-center gap-2 rounded-md border border-violet-200 bg-violet-50 px-3 py-2 text-sm text-violet-900 dark:border-violet-900 dark:bg-violet-950/40 dark:text-violet-200">
+            <p class="flex flex-wrap items-center gap-2 rounded-control bg-violet-50 px-4 py-2.5 text-sm text-violet-900 dark:bg-violet-950/40 dark:text-violet-200">
               Merged by
               <ChangeStateBadge state={change().forge.state} />
               <a href={subjectPath(routeParameters.projectId, change())} class="font-medium underline">
@@ -177,7 +177,7 @@ export const SubjectPage = () => {
           <ul class="grid gap-2 sm:grid-cols-2">
             <For each={distinctPeople(analysis)} fallback={<li class="text-sm text-slate-500 dark:text-slate-500">No person is recorded for this scan.</li>}>
               {person => (
-                <li class="flex items-center gap-3 rounded-md border border-slate-200 px-3 py-2 dark:border-slate-800">
+                <li class="flex items-center gap-3 rounded-panel bg-surface px-4 py-3">
                   <PersonAvatar
                     person={person}
                     analysis={analysis}
@@ -203,7 +203,7 @@ export const SubjectPage = () => {
           <Show
             when={analysis.analyzers.length > 0}
             fallback={(
-              <div class="rounded-lg border border-dashed border-slate-300 px-4 py-6 text-center dark:border-slate-700">
+              <div class="rounded-panel bg-surface px-5 py-8 text-center">
                 <p class="text-sm text-slate-500 dark:text-slate-500">
                   This change was recorded but never scanned. Closed and merged changes are kept for
                   their history rather than put through every analyzer.
@@ -213,7 +213,7 @@ export const SubjectPage = () => {
                     type="button"
                     disabled={runState().phase === "running"}
                     onClick={() => void runAnalyzers(analysis)}
-                    class="mt-3 rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white"
+                    class="mt-3 rounded-control bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white"
                   >
                     {runState().phase === "running" ? "Running..." : "Run analyzers now"}
                   </button>
@@ -224,7 +224,7 @@ export const SubjectPage = () => {
               </div>
             )}
           >
-            <div class="divide-y divide-slate-200 overflow-hidden rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+            <div class="divide-y divide-hairline overflow-hidden rounded-panel bg-surface">
               <For each={analysis.analyzers}>
                 {analyzer => <AnalyzerCard run={analyzer} />}
               </For>
@@ -238,7 +238,7 @@ export const SubjectPage = () => {
             <ul class="space-y-2">
               <For each={failedCheckRuns}>
                 {check => (
-                  <li class="flex flex-wrap items-center justify-between gap-2 rounded-md border border-red-200 px-3 py-2 text-sm dark:border-red-900">
+                  <li class="flex flex-wrap items-center justify-between gap-2 rounded-control bg-red-50 px-4 py-2.5 text-sm dark:bg-red-950/40">
                     <span class="font-medium text-slate-900 dark:text-slate-100">{check.name}</span>
                     <span class="flex items-center gap-3 text-xs">
                       <Show when={check.url}>
@@ -279,7 +279,7 @@ export const SubjectPage = () => {
             <ul class="space-y-2">
               <For each={history().slice(1)}>
                 {earlier => (
-                  <li class="flex items-center justify-between gap-3 rounded-md border border-slate-200 px-3 py-2 text-sm dark:border-slate-800">
+                  <li class="flex items-center justify-between gap-3 rounded-panel bg-surface px-4 py-3 text-sm">
                     <span class="flex items-center gap-2">
                       <StatusDot tone={analysisTone(earlier)} />
                       {toneLabel(analysisTone(earlier))}

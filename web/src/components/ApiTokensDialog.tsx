@@ -164,7 +164,7 @@ export const ApiTokensDialog = (properties: { open: boolean; onOpenChange: (isOp
       <Dialog.Portal>
         <Dialog.Overlay class="fixed inset-0 z-40 bg-slate-950/40" />
         <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <Dialog.Content class="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-lg border border-slate-200 bg-white p-5 shadow-xl dark:border-slate-800 dark:bg-slate-900">
+          <Dialog.Content class="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-panel bg-surface p-5 shadow-xl">
             <Dialog.Title class="text-base font-semibold text-slate-900 dark:text-slate-100">API tokens</Dialog.Title>
             <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
               Create a token for read-only API access. The token is shown only after creation.
@@ -177,7 +177,7 @@ export const ApiTokensDialog = (properties: { open: boolean; onOpenChange: (isOp
             </Show>
             <Show when={rawToken()}>
               {token => (
-                <section class="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 dark:border-amber-700 dark:bg-amber-950/30">
+                <section class="mt-4 rounded-panel bg-amber-50 p-3 dark:bg-amber-950/30">
                   <h2 class="text-sm font-semibold text-slate-900 dark:text-slate-100">Copy your new token</h2>
                   <p class="mt-1 text-sm text-slate-700 dark:text-slate-300">It will not be shown again after you close this dialog.</p>
                   <textarea
@@ -185,14 +185,14 @@ export const ApiTokensDialog = (properties: { open: boolean; onOpenChange: (isOp
                     readonly
                     value={token()}
                     rows={3}
-                    class="mt-3 w-full resize-none rounded-md border border-amber-300 bg-white p-2 font-mono text-xs text-slate-900 dark:border-amber-700 dark:bg-slate-950 dark:text-slate-100"
+                    class="mt-3 w-full resize-none rounded-control bg-surface p-2 font-mono text-xs text-slate-900 dark:text-slate-100"
                   />
                   <div class="mt-2 flex items-center gap-3">
                     <button
                       type="button"
                       disabled={copyState() === "copying"}
                       onClick={() => void copyToken()}
-                      class="rounded-md border border-amber-400 px-3 py-1.5 text-sm font-medium text-slate-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-amber-600 dark:text-amber-100 dark:hover:bg-amber-900"
+                      class="rounded-control px-3 py-1.5 text-sm font-medium text-slate-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60 dark:text-amber-100 dark:hover:bg-amber-900"
                     >
                       <Switch>
                         <Match when={copyState() === "copying"}>Copying...</Match>
@@ -218,7 +218,7 @@ export const ApiTokensDialog = (properties: { open: boolean; onOpenChange: (isOp
                   value={name()}
                   disabled={writeState().phase === "creating" || writeState().phase === "revoking"}
                   onInput={event => setName(event.currentTarget.value)}
-                  class="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  class="mt-1 w-full rounded-control bg-raised px-3 py-1.5 text-sm text-slate-900 disabled:cursor-not-allowed disabled:opacity-60 dark:text-slate-100"
                 />
               </label>
               <label class="block">
@@ -237,7 +237,7 @@ export const ApiTokensDialog = (properties: { open: boolean; onOpenChange: (isOp
                       }
                     }
                   }}
-                  class="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  class="mt-1 w-full rounded-control bg-raised px-3 py-1.5 text-sm text-slate-900 disabled:cursor-not-allowed disabled:opacity-60 dark:text-slate-100"
                 >
                   <option value="ninety-days">90 days</option>
                   <option value="one-year">One year</option>
@@ -247,7 +247,7 @@ export const ApiTokensDialog = (properties: { open: boolean; onOpenChange: (isOp
               <button
                 type="submit"
                 disabled={writeState().phase === "creating" || writeState().phase === "revoking"}
-                class="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white"
+                class="rounded-control bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white"
               >
                 {writeState().phase === "creating" ? "Creating..." : "Create token"}
               </button>
@@ -262,10 +262,10 @@ export const ApiTokensDialog = (properties: { open: boolean; onOpenChange: (isOp
               </Show>
               <Show when={tokens()}>
                 {tokens => (
-                  <ul class="mt-3 divide-y divide-slate-200 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
-                    <For each={tokens()} fallback={<li class="px-3 py-6 text-center text-sm text-slate-500 dark:text-slate-400">No API tokens yet.</li>}>
+                  <ul class="mt-3 divide-y divide-hairline">
+                    <For each={tokens()} fallback={<li class="px-1 py-6 text-center text-sm text-slate-500 dark:text-slate-400">No API tokens yet.</li>}>
                       {token => (
-                        <li class="flex items-center justify-between gap-4 px-3 py-2.5">
+                        <li class="flex items-center justify-between gap-4 px-1 py-3">
                           <div class="min-w-0">
                             <p class="truncate text-sm font-medium text-slate-900 dark:text-slate-100">{token.name}</p>
                             <p class="text-xs text-slate-500 dark:text-slate-400">
@@ -276,7 +276,7 @@ export const ApiTokensDialog = (properties: { open: boolean; onOpenChange: (isOp
                             type="button"
                             disabled={writeState().phase === "creating" || writeState().phase === "revoking"}
                             onClick={() => void revokeToken(token.name)}
-                            class="shrink-0 rounded-md border border-slate-300 px-2 py-1 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                            class="shrink-0 rounded-control bg-raised px-2 py-1 text-sm font-medium text-slate-700 hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-60 dark:text-slate-300"
                           >
                             {revokingTokenName() === token.name ? "Revoking..." : "Revoke"}
                           </button>
@@ -288,7 +288,7 @@ export const ApiTokensDialog = (properties: { open: boolean; onOpenChange: (isOp
               </Show>
             </section>
             <div class="mt-5 flex justify-end">
-              <Dialog.CloseButton class="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
+              <Dialog.CloseButton class="rounded-control bg-raised px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-raised-hover dark:text-slate-300">
                 Close
               </Dialog.CloseButton>
             </div>

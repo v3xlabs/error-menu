@@ -11,7 +11,7 @@ type OrganizationsState
     | { phase: "loaded"; organizations: readonly Organization[]; }
     | { phase: "error"; message: string; };
 
-const FIELD = "w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-900 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100";
+const FIELD = "w-full rounded-control bg-raised px-3 py-1.5 text-sm text-slate-900 disabled:cursor-not-allowed disabled:opacity-60 dark:text-slate-100";
 
 const renderOrganizations = (state: OrganizationsState): JSX.Element => {
   switch (state.phase) {
@@ -19,19 +19,19 @@ const renderOrganizations = (state: OrganizationsState): JSX.Element => {
       return <p class="text-sm text-slate-500 dark:text-slate-500">Loading organizations...</p>;
     }
     case "anonymous": {
-      return <p class="rounded-lg border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-500">Sign in to view organizations.</p>;
+      return <p class="rounded-panel bg-surface px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-500">Sign in to view organizations.</p>;
     }
     case "error": {
       return <p class="text-sm text-red-600 dark:text-red-400" role="alert">{state.message}</p>;
     }
     case "loaded": {
       return (
-        <Show when={state.organizations.length > 0} fallback={<p class="rounded-lg border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-500">No organizations yet.</p>}>
-          <ul class="divide-y divide-slate-200 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+        <Show when={state.organizations.length > 0} fallback={<p class="rounded-panel bg-surface px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-500">No organizations yet.</p>}>
+          <ul class="divide-y divide-hairline rounded-panel bg-surface">
             <For each={state.organizations}>
               {organization => (
                 <li>
-                  <a href={`/orgs/${organization.organization_id}`} class="flex items-center justify-between gap-4 px-4 py-3 hover:bg-slate-100 dark:hover:bg-slate-900">
+                  <a href={`/orgs/${organization.organization_id}`} class="flex items-center justify-between gap-4 px-5 py-3.5 hover:bg-raised">
                     <div class="min-w-0 flex-1">
                       <p class="text-sm font-medium text-slate-900 dark:text-slate-100">{organization.name}</p>
                       <Show when={organization.description}>
@@ -93,7 +93,7 @@ const CreateOrganizationForm = (properties: { onCreated: (organization: Organiza
   };
 
   return (
-    <section class="border-t border-slate-200 pt-6 dark:border-slate-800">
+    <section class="border-t border-hairline pt-6">
       <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">New organization</h2>
       <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">An organization owns projects and carries its own member roles.</p>
       <form class="mt-4 space-y-3" onSubmit={event => void handleSubmit(event)}>
@@ -131,7 +131,7 @@ const CreateOrganizationForm = (properties: { onCreated: (organization: Organiza
         <button
           type="submit"
           disabled={isSubmitting()}
-          class="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white"
+          class="rounded-control bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white"
         >
           {isSubmitting() ? "Creating..." : "Create organization"}
         </button>

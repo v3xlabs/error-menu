@@ -24,15 +24,15 @@ const renderJobs = (state: QueuePageState): JSX.Element => {
         <Show
           when={state.jobs.length > 0}
           fallback={(
-            <p class="rounded-lg border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-500">
+            <p class="rounded-panel bg-surface px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-500">
               The queue is empty. The schedule fills it when a project's interval elapses.
             </p>
           )}
         >
-          <ul class="divide-y divide-slate-200 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+          <ul class="divide-y divide-hairline rounded-panel bg-surface">
             <For each={state.jobs}>
               {job => (
-                <li class="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5">
+                <li class="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 py-3">
                   <a
                     href={`/projects/${job.project_id}`}
                     class="min-w-0 flex-1 truncate text-sm font-medium text-slate-900 hover:underline dark:text-slate-100"

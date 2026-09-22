@@ -49,7 +49,6 @@ export const ProjectHeader = (properties: {
         </div>
       </div>
       <div class="flex shrink-0 flex-col items-end gap-2">
-        <QueueStateBadge state={properties.queue} />
         <div class="flex items-center gap-2">
           <Show when={canOperate()}>
             <InspectModal projectId={properties.project.project_id} onAnalysed={() => properties.onAnalysed()} />
@@ -57,7 +56,7 @@ export const ProjectHeader = (properties: {
               type="button"
               disabled={properties.isDiscovering}
               onClick={() => properties.onDiscover()}
-              class="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white"
+              class="rounded-control bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white"
             >
               {properties.isDiscovering ? "Discovering..." : "Discover changes"}
             </button>
@@ -66,6 +65,7 @@ export const ProjectHeader = (properties: {
             <ProjectSettingsModal project={properties.project} onSaved={() => properties.onSaved()} />
           </Show>
         </div>
+        <QueueStateBadge state={properties.queue} />
       </div>
     </header>
   );

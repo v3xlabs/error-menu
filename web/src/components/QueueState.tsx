@@ -6,7 +6,7 @@ import type { QueueState } from "../domain/job";
 import { TONE_TINT } from "./Gauge";
 
 const PILL = "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium";
-const TIP = "z-50 max-w-sm rounded-md bg-slate-900 px-2.5 py-1.5 text-xs text-white dark:bg-slate-100 dark:text-slate-900";
+const TIP = "z-50 max-w-sm rounded-control bg-slate-900 px-2.5 py-1.5 text-xs text-white dark:bg-slate-100 dark:text-slate-900";
 
 const RUNNING = `${PILL} ${TONE_TINT.running}`;
 const QUEUED = `${PILL} ${TONE_TINT.unscanned}`;

@@ -11,7 +11,7 @@ export const ProjectMark = (properties: { project: Project; size: number; }) => 
     fallback={(
       <span
         style={{ width: `${properties.size}px`, height: `${properties.size}px` }}
-        class="flex shrink-0 items-center justify-center rounded-md bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500"
+        class="flex shrink-0 items-center justify-center rounded-control bg-raised text-slate-400 dark:text-slate-500"
       >
         <FiBox size={Math.round(properties.size * 0.55)} />
       </span>
@@ -24,7 +24,7 @@ export const ProjectMark = (properties: { project: Project; size: number; }) => 
         width={properties.size}
         height={properties.size}
         style={{ width: `${properties.size}px`, height: `${properties.size}px` }}
-        class="shrink-0 rounded-md object-contain"
+        class="shrink-0 rounded-control object-contain"
       />
     )}
   </Show>

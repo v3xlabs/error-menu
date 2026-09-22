@@ -13,10 +13,10 @@ const KIND_LABELS: Record<DependencyKind, string> = {
   other: "dependency file",
 };
 
-const TIP = "z-50 rounded-md bg-slate-900 px-2.5 py-1.5 text-xs text-white dark:bg-slate-100 dark:text-slate-900";
+const TIP = "z-50 rounded-control bg-slate-900 px-2.5 py-1.5 text-xs text-white dark:bg-slate-100 dark:text-slate-900";
 
 const DependencyFileRow = (properties: { file: DependencyFile; }) => (
-  <li class="flex items-center gap-3 px-3 py-2">
+  <li class="flex items-center gap-3 px-4 py-2.5">
     <Tooltip>
       <Tooltip.Trigger as="span" class="flex shrink-0">
         <FileIcon kind={properties.file.kind} size={15} />
@@ -38,7 +38,7 @@ const DependencyFileRow = (properties: { file: DependencyFile; }) => (
 );
 
 export const DependencyFileList = (properties: { files: readonly DependencyFile[]; }) => (
-  <ul class="divide-y divide-slate-200 rounded-md border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+  <ul class="divide-y divide-hairline rounded-panel bg-surface">
     <For each={properties.files}>{file => <DependencyFileRow file={file} />}</For>
   </ul>
 );

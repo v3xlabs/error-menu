@@ -98,7 +98,7 @@ export const severitySlots = (counts: SeverityCounts): readonly CountSlot[] =>
     icon: SEVERITY_ICONS[severity],
   }));
 
-const TIP = "z-50 rounded-md bg-slate-900 px-2.5 py-1.5 text-xs text-white dark:bg-slate-100 dark:text-slate-900";
+const TIP = "z-50 rounded-control bg-slate-900 px-2.5 py-1.5 text-xs text-white dark:bg-slate-100 dark:text-slate-900";
 
 // One slot per kind, always in the same place and always the same width, so a column of
 // rows can be read down rather than one row at a time.

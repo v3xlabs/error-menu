@@ -140,7 +140,7 @@ export const OrganizationMembers = (properties: { organizationId: string; }) => 
   };
 
   return (
-    <section class="mt-6 border-t border-slate-200 pt-5 dark:border-slate-800">
+    <section class="mt-6 border-t border-hairline pt-5">
       <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">Members</h2>
       <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Set a member role, remove a member, or add another user.</p>
       <Show when={writeError()}>
@@ -154,13 +154,13 @@ export const OrganizationMembers = (properties: { organizationId: string; }) => 
       </Show>
       <Show when={members()}>
         {loadedMembers => (
-          <ul class="mt-4 divide-y divide-slate-200 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+          <ul class="mt-4 divide-y divide-hairline rounded-panel bg-surface">
             <For
               each={loadedMembers()}
-              fallback={<li class="px-3 py-6 text-center text-sm text-slate-500 dark:text-slate-400">No member yet.</li>}
+              fallback={<li class="px-5 py-8 text-center text-sm text-slate-500 dark:text-slate-400">No member yet.</li>}
             >
               {member => (
-                <li class="flex items-center justify-between gap-4 px-3 py-2.5">
+                <li class="flex items-center justify-between gap-4 px-5 py-3">
                   <p class="min-w-0 truncate text-sm font-medium text-slate-900 dark:text-slate-100">
                     {member.display_name}
                     <span id={`organization-member-${member.user_id}`} class="sr-only">{` (identifier ${member.user_id})`}</span>
@@ -172,7 +172,7 @@ export const OrganizationMembers = (properties: { organizationId: string; }) => 
                         disabled={isBusy(member.user_id)}
                         aria-describedby={`organization-member-${member.user_id}`}
                         onChange={event => changeRole(member.user_id, event.currentTarget.value)}
-                        class="rounded-md border border-slate-300 bg-white px-2 py-1 text-sm text-slate-900 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                        class="rounded-control bg-raised px-2 py-1 text-sm text-slate-900 disabled:cursor-not-allowed disabled:opacity-60 dark:text-slate-100"
                       >
                         <For each={ORGANIZATION_ROLES}>{role => <option value={role}>{role}</option>}</For>
                       </select>
@@ -183,7 +183,7 @@ export const OrganizationMembers = (properties: { organizationId: string; }) => 
                       aria-label={`Remove ${member.display_name}`}
                       aria-describedby={`organization-member-${member.user_id}`}
                       onClick={() => void dropMember(member.user_id)}
-                      class="rounded-md border border-slate-300 px-2 py-1 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                      class="rounded-control bg-raised px-2 py-1 text-sm font-medium text-slate-700 hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-60 dark:text-slate-300"
                     >
                       {isBusy(member.user_id) ? "Removing..." : "Remove"}
                     </button>
@@ -211,7 +211,7 @@ export const OrganizationMembers = (properties: { organizationId: string; }) => 
               <select
                 value={newUserId()}
                 onChange={event => setNewUserId(event.currentTarget.value)}
-                class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                class="w-full rounded-control bg-raised px-2 py-1.5 text-sm text-slate-900 dark:text-slate-100"
               >
                 <option value="">Select a user</option>
                 <For each={candidates()}>
@@ -229,7 +229,7 @@ export const OrganizationMembers = (properties: { organizationId: string; }) => 
 
                   if (role !== undefined) setNewRole(role);
                 }}
-                class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 sm:w-auto dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                class="w-full rounded-control bg-raised px-2 py-1.5 text-sm text-slate-900 sm:w-auto dark:text-slate-100"
               >
                 <For each={ORGANIZATION_ROLES}>{role => <option value={role}>{role}</option>}</For>
               </select>
@@ -237,7 +237,7 @@ export const OrganizationMembers = (properties: { organizationId: string; }) => 
             <button
               type="submit"
               disabled={writeState().phase === "busy"}
-              class="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white"
+              class="rounded-control bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white"
             >
               Add member
             </button>

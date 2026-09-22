@@ -2,6 +2,20 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* Chrome is carried by fill rather than by an outline: the page is the canvas, every
+   panel, row, menu and dialog is a surface laid on it, and a control that must read as
+   editable is raised off that surface. Nothing in the product draws a box border. */
+@theme {
+  --color-canvas: #f8fafc;
+  --color-surface: #ffffff;
+  --color-raised: #ebeff4;
+  --color-raised-hover: #dfe5ec;
+  --color-hairline: #e2e8f0;
+
+  --radius-panel: 0.875rem;
+  --radius-control: 0.5rem;
+}
+
 :root {
   color-scheme: light dark;
 }
@@ -22,8 +36,39 @@ html.dark {
   --color-slate-800: #27272a;
   --color-slate-900: #141416;
   --color-slate-950: #000000;
+
+  --color-canvas: #000000;
+  --color-surface: #141416;
+  --color-raised: #1c1c20;
+  --color-raised-hover: #27272a;
+  --color-hairline: #27272a;
 }
 
 body {
-  @apply bg-white text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100;
+  @apply bg-canvas text-slate-900 antialiased dark:text-slate-100;
+}
+
+/* Tailwind's preflight leaves a button at the text cursor, and Kobalte's menu, option and
+   tab primitives inherit the same default, so the whole product states it once here. */
+@layer base {
+  button,
+  summary,
+  select,
+  input[type="checkbox"],
+  input[type="radio"],
+  [role="button"],
+  [role="menuitem"],
+  [role="option"],
+  [role="tab"],
+  [role="checkbox"],
+  [role="radio"],
+  label:has(input[type="checkbox"]),
+  label:has(input[type="radio"]) {
+    cursor: pointer;
+  }
+
+  :disabled,
+  [aria-disabled="true"] {
+    cursor: not-allowed;
+  }
 }
