@@ -17,6 +17,7 @@ use crate::prelude::*;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Project {
     pub id: Id<Project>,
+    pub organization_id: Id<Organization>,
     pub name: String,
     pub remote: RemoteUrl,
     pub forge_kind: ForgeKind,
@@ -36,6 +37,7 @@ pub struct ProjectIcon {
 #[derive(Debug)]
 pub struct ProjectSummary {
     pub project: Project,
+    pub organization_name: String,
     pub viewer_role: ProjectRole,
     pub analyzers: Vec<String>,
     pub default_branch: Option<ProjectBranchSummary>,
@@ -64,32 +66,41 @@ pub enum ProjectAnalyzerTone {
     Unscanned,
 }
 
+/// What the caller decides when a project is created. The creator becomes its owner, and
+/// the analyzer list is ignored while `uses_default_analyzers` holds.
+#[derive(Debug)]
+pub struct NewProject<'a> {
+    pub organization_id: Id<Organization>,
+    pub owner_id: Id<User>,
+    pub name: &'a str,
+    pub remote: RemoteUrl,
+    pub forge_kind: ForgeKind,
+    pub uses_default_analyzers: bool,
+    pub analyzers: &'a [&'a str],
+}
+
 impl Project {
     pub async fn create(
         database: &Database,
-        owner_id: Id<User>,
-        name: &str,
-        remote: RemoteUrl,
-        forge_kind: ForgeKind,
-        uses_default_analyzers: bool,
-        analyzers: &[&str],
+        new: NewProject<'_>,
     ) -> Result<Project, DatabaseError> {
-        validate_analyzers(analyzers)?;
+        validate_analyzers(new.analyzers)?;
 
         let id: Id<Project> = database.ids.next();
         let mut transaction = database.write().await?;
         sqlx::query(
-            "INSERT INTO projects (id, name, remote_url, forge_kind, uses_default_analyzers) \
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO projects (id, organization_id, name, remote_url, forge_kind, \
+             uses_default_analyzers) VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(id.raw())
-        .bind(name)
-        .bind(remote.as_str())
-        .bind(forge_kind.stored())
-        .bind(i64::from(uses_default_analyzers))
+        .bind(new.organization_id.raw())
+        .bind(new.name)
+        .bind(new.remote.as_str())
+        .bind(new.forge_kind.stored())
+        .bind(i64::from(new.uses_default_analyzers))
         .execute(&mut *transaction)
         .await?;
-        for analyzer in analyzers {
+        for analyzer in new.analyzers {
             sqlx::query("INSERT INTO project_analyzers (project_id, analyzer) VALUES (?, ?)")
                 .bind(id.raw())
                 .bind(analyzer)
@@ -100,19 +111,20 @@ impl Project {
             "INSERT INTO project_members (project_id, user_id, role) VALUES (?, ?, 'owner')",
         )
         .bind(id.raw())
-        .bind(owner_id.raw())
+        .bind(new.owner_id.raw())
         .execute(&mut *transaction)
         .await?;
         transaction.commit().await?;
 
         Ok(Project {
             id,
-            name: name.to_owned(),
-            remote,
-            forge_kind,
+            organization_id: new.organization_id,
+            name: new.name.to_owned(),
+            remote: new.remote,
+            forge_kind: new.forge_kind,
             description: None,
             icon: ProjectIcon::default(),
-            uses_default_analyzers,
+            uses_default_analyzers: new.uses_default_analyzers,
         })
     }
 
@@ -121,8 +133,8 @@ impl Project {
         project_id: Id<Project>,
     ) -> Result<Option<Project>, DatabaseError> {
         let row = sqlx::query(
-            "SELECT id, name, remote_url, forge_kind, description, icon_light_path, icon_dark_path, \
-             uses_default_analyzers FROM projects WHERE id = ?",
+            "SELECT id, organization_id, name, remote_url, forge_kind, description, \
+             icon_light_path, icon_dark_path, uses_default_analyzers FROM projects WHERE id = ?",
         )
         .bind(project_id.raw())
         .fetch_optional(&database.pool)
@@ -131,45 +143,17 @@ impl Project {
         row.as_ref().map(Project::decode_row).transpose()
     }
 
-    pub async fn list(database: &Database) -> Result<Vec<Project>, DatabaseError> {
-        let rows = sqlx::query(
-            "SELECT id, name, remote_url, forge_kind, description, icon_light_path, icon_dark_path, \
-             uses_default_analyzers FROM projects ORDER BY id DESC",
-        )
-        .fetch_all(&database.pool)
-        .await?;
-
-        rows.iter().map(Project::decode_row).collect()
-    }
-
-    pub async fn list_for(database: &Database, user: &User) -> Result<Vec<Project>, DatabaseError> {
-        match user.role {
-            UserRole::Admin => return Project::list(database).await,
-            UserRole::Guest => return Ok(Vec::new()),
-            UserRole::Member => {}
-        }
-        let rows = sqlx::query(
-            "SELECT p.id, p.name, p.remote_url, p.forge_kind, p.description, p.icon_light_path, p.icon_dark_path, \
-             p.uses_default_analyzers FROM projects p \
-             JOIN project_members m ON m.project_id = p.id \
-             WHERE m.user_id = ? ORDER BY p.id DESC",
-        )
-        .bind(user.id.raw())
-        .fetch_all(&database.pool)
-        .await?;
-        rows.iter().map(Project::decode_row).collect()
-    }
-
     pub async fn summaries_for(
         database: &Database,
         user: &User,
     ) -> Result<Vec<ProjectSummary>, DatabaseError> {
-        if user.role == UserRole::Guest {
-            return Ok(Vec::new());
-        }
         let rows = sqlx::query(
             "WITH visible_projects AS MATERIALIZED ( \
-                SELECT p.*, CASE WHEN ? THEN 'owner' ELSE m.role END AS viewer_role, \
+                SELECT p.*, o.name AS organization_name, \
+                    CASE WHEN ? THEN 'owner' \
+                         WHEN m.role = 'owner' OR g.role = 'owner' THEN 'owner' \
+                         WHEN m.role = 'operator' OR g.role = 'operator' THEN 'operator' \
+                         ELSE 'viewer' END AS viewer_role, \
                     (SELECT json_group_array(analyzer) FROM ( \
                         SELECT analyzer FROM project_analyzers WHERE project_id = p.id \
                         ORDER BY analyzer \
@@ -179,8 +163,11 @@ impl Project {
                      FROM subjects s WHERE s.project_id = p.id AND s.kind = 'branch') \
                     AS branch_snapshot_id \
                 FROM projects p \
+                JOIN organizations o ON o.id = p.organization_id \
                 LEFT JOIN project_members m ON m.project_id = p.id AND m.user_id = ? \
-                WHERE ? OR m.user_id IS NOT NULL \
+                LEFT JOIN organization_members g \
+                    ON g.organization_id = p.organization_id AND g.user_id = ? \
+                WHERE ? OR m.user_id IS NOT NULL OR g.user_id IS NOT NULL \
              ) \
              SELECT p.*, r.id AS run_id, r.analyzer, r.status, \
                     COUNT(f.id) AS finding_count, \
@@ -197,6 +184,7 @@ impl Project {
              GROUP BY p.id, r.id ORDER BY p.id DESC, r.analyzer",
         )
         .bind(user.role == UserRole::Admin)
+        .bind(user.id.raw())
         .bind(user.id.raw())
         .bind(user.role == UserRole::Admin)
         .fetch_all(&database.pool)
@@ -233,6 +221,7 @@ impl Project {
                     runner::effective_analyzers(project.uses_default_analyzers, custom_analyzers);
                 summaries.push(ProjectSummary {
                     project,
+                    organization_name: row.try_get("organization_name")?,
                     viewer_role,
                     analyzers,
                     default_branch,
@@ -291,6 +280,20 @@ impl Project {
         sqlx::query("UPDATE projects SET last_enqueued_at = ? WHERE id = ?")
             .bind(at.to_string())
             .bind(project_id.raw())
+            .execute(&database.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn move_to(
+        &self,
+        database: &Database,
+        organization_id: Id<Organization>,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query("UPDATE projects SET organization_id = ? WHERE id = ?")
+            .bind(organization_id.raw())
+            .bind(self.id.raw())
             .execute(&database.pool)
             .await?;
 
@@ -390,6 +393,7 @@ impl DecodeRow for Project {
 
         Ok(Project {
             id: Id::from_raw(row.try_get("id")?),
+            organization_id: Id::from_raw(row.try_get("organization_id")?),
             name: row.try_get("name")?,
             remote,
             forge_kind: ForgeKind::read(row, "forge_kind")?,

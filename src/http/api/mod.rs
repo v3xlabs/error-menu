@@ -9,6 +9,7 @@ pub mod analysis;
 pub mod health;
 pub mod job;
 pub mod member;
+pub mod organization;
 pub mod project;
 pub mod repository;
 pub mod token;
@@ -71,7 +72,54 @@ pub async fn project_access(
     }
 }
 
-pub fn can_create_project(user: &User) -> bool {
+pub enum OrganizationPermission {
+    Viewer,
+    Operator,
+    Owner,
+}
+
+pub enum OrganizationAccess {
+    Allowed {
+        organization: Organization,
+        role: OrganizationRole,
+    },
+    Forbidden,
+    Missing,
+    Failed(String),
+}
+
+pub async fn organization_access(
+    state: &AppState,
+    user: &User,
+    organization_id: Id<Organization>,
+    permission: OrganizationPermission,
+) -> OrganizationAccess {
+    let organization = match Organization::load(&state.database, organization_id).await {
+        Ok(Some(organization)) => organization,
+        Ok(None) => return OrganizationAccess::Missing,
+        Err(error) => return OrganizationAccess::Failed(error.to_string()),
+    };
+    let role = match OrganizationRole::for_user(&state.database, user, organization_id).await {
+        Ok(role) => role,
+        Err(error) => return OrganizationAccess::Failed(error.to_string()),
+    };
+    let allowed = matches!(
+        (role, permission),
+        (Some(_), OrganizationPermission::Viewer)
+            | (
+                Some(OrganizationRole::Operator | OrganizationRole::Owner),
+                OrganizationPermission::Operator
+            )
+            | (Some(OrganizationRole::Owner), OrganizationPermission::Owner)
+    );
+    if let Some(role) = role.filter(|_| allowed) {
+        OrganizationAccess::Allowed { organization, role }
+    } else {
+        OrganizationAccess::Forbidden
+    }
+}
+
+pub fn can_create_organization(user: &User) -> bool {
     matches!(user.role, UserRole::Member | UserRole::Admin)
 }
 
@@ -92,6 +140,12 @@ pub fn forbidden() -> Error {
 pub fn missing_project() -> Error {
     Error {
         message: "project was not found".to_owned(),
+    }
+}
+
+pub fn missing_organization() -> Error {
+    Error {
+        message: "organization was not found".to_owned(),
     }
 }
 

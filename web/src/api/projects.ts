@@ -77,9 +77,39 @@ export const createProject = async (project: CreateProject): Promise<Result<Proj
 
   if (response.status === 201) return { ok: true, value: response.data };
 
-  if (response.status === 400 || response.status === 500) return { ok: false, message: response.data.message };
+  switch (response.status) {
+    case 400:
+    case 403:
+    case 500: {
+      return { ok: false, message: response.data.message };
+    }
+    default: {
+      return failed(response.status);
+    }
+  }
+};
 
-  return failed(response.status);
+export const moveProject = async (projectId: string, organizationId: string): Promise<Result<Project>> => {
+  const response = await api("/projects/{project_id}/organization", "put", {
+    path: { project_id: projectId },
+    contentType: "application/json; charset=utf-8",
+    data: { organization_id: organizationId },
+  });
+
+  if (response.status === 200) return { ok: true, value: response.data };
+
+  switch (response.status) {
+    case 400:
+    case 401:
+    case 403:
+    case 404:
+    case 500: {
+      return { ok: false, message: response.data.message };
+    }
+    default: {
+      return failed(response.status);
+    }
+  }
 };
 
 export const runAnalysis = async (

@@ -84,6 +84,18 @@ Every authentication query rejects expired rows by predicate. Deleting those row
 housekeeping and runs hourly on the schedule, never in a request, because SQLite has one
 writer and a deletion that removes nothing still takes it.
 
+## Where authorization resolves
+
+One function answers what a caller may do with a project: `ProjectRole::for_user`. It takes the
+higher of the direct `project_members` grant and the grant inherited from the project's
+organization, and an administrator short circuits to owner before either is read. Every HTTP
+handler reaches it through `project_access`, and every MCP tool through `readable_project`, so a
+new endpoint gets the rule by calling one of those rather than by repeating it.
+
+`Project::summaries_for` states the same rule a second time, in SQL, because a listing cannot ask
+per row. That duplication is the sharp edge of this design: a change to who may see a project has
+to land in both places or the project list and the project page will disagree.
+
 ## Why no broker, ever
 
 Kafka, RabbitMQ, Redis and BullMQ all solve throughput. Throughput is not our problem. If the

@@ -1,10 +1,16 @@
 import { createEffect, createSignal, For, Match, Show, Switch } from "solid-js";
 
+import type { Organization } from "../api/organizations";
+import { listOrganizations } from "../api/organizations";
 import type { User, UserRole } from "../api/users";
 import { listUsers, setUserRole } from "../api/users";
 import { useAccount } from "../app/account";
 
 type UsersState = { phase: "loading"; } | { phase: "loaded"; users: readonly User[]; } | { phase: "error"; message: string; };
+type OrganizationsState
+  = | { phase: "loading"; }
+    | { phase: "loaded"; organizations: readonly Organization[]; }
+    | { phase: "error"; message: string; };
 
 const USER_ROLES: readonly UserRole[] = ["guest", "member", "admin"];
 
@@ -119,6 +125,77 @@ const UsersSection = (properties: { onChanged: () => void; }) => {
   );
 };
 
+const OrganizationsSection = () => {
+  const [state, setState] = createSignal<OrganizationsState>({ phase: "loading" });
+
+  const load = async (): Promise<void> => {
+    setState({ phase: "loading" });
+
+    const result = await listOrganizations();
+
+    setState(result.ok
+      ? { phase: "loaded", organizations: result.value }
+      : { phase: "error", message: result.message });
+  };
+
+  createEffect(
+    () => undefined,
+    () => {
+      void load();
+    },
+  );
+
+  const loadError = (): string | null => {
+    const current = state();
+
+    return current.phase === "error" ? current.message : null;
+  };
+
+  const organizations = (): readonly Organization[] | undefined => {
+    const current = state();
+
+    return current.phase === "loaded" ? current.organizations : undefined;
+  };
+
+  return (
+    <section>
+      <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">Organizations</h2>
+      <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Every organization on this instance. Open one to set its members.</p>
+      <Show when={state().phase === "loading"}>
+        <p class="mt-4 text-sm text-slate-500 dark:text-slate-400" role="status">Loading organizations...</p>
+      </Show>
+      <Show when={loadError()}>{message => <p class="mt-4 text-sm text-red-600 dark:text-red-400" role="alert">{message()}</p>}</Show>
+      <Show when={organizations()}>
+        {loadedOrganizations => (
+          <ul class="mt-4 divide-y divide-slate-200 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+            <For
+              each={loadedOrganizations()}
+              fallback={<li class="px-3 py-6 text-center text-sm text-slate-500 dark:text-slate-400">No organization yet.</li>}
+            >
+              {organization => (
+                <li class="flex items-center justify-between gap-4 px-3 py-2.5">
+                  <div class="min-w-0">
+                    <a
+                      href={`/orgs/${organization.organization_id}`}
+                      class="truncate text-sm font-medium text-slate-900 underline hover:text-slate-950 dark:text-slate-100 dark:hover:text-white"
+                    >
+                      {organization.name}
+                    </a>
+                    <p class="truncate font-mono text-xs text-slate-500 dark:text-slate-400">{organization.organization_id}</p>
+                  </div>
+                  <p class="shrink-0 text-sm text-slate-700 dark:text-slate-300">
+                    {organization.project_count === 1 ? "1 project" : `${organization.project_count} projects`}
+                  </p>
+                </li>
+              )}
+            </For>
+          </ul>
+        )}
+      </Show>
+    </section>
+  );
+};
+
 export const AdminPage = () => {
   const account = useAccount();
 
@@ -134,6 +211,7 @@ export const AdminPage = () => {
         </Match>
         <Match when={true}>
           <UsersSection onChanged={() => void account.reload()} />
+          <OrganizationsSection />
           <section>
             <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">Queue</h2>
             <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Every job the schedule has run, newest first.</p>

@@ -7,6 +7,10 @@ forge diffs are rate limited and truncated for large changes.
 **Forge** — everything built on top of git: pull requests, issues, comments, review state,
 check runs and their logs. Forge access is read only. A project can have no forge at all.
 
+**Organization** — who a set of projects belongs to. It holds its own grants, so one grant on an
+organization reaches every project inside it. A project belongs to exactly one organization. This
+is error.menu's own tenancy boundary and has nothing to do with a GitHub organization.
+
 **Project** — one watched repository. It holds the remote, optional forge link, enabled analyzers,
 and the schedule.
 

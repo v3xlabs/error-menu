@@ -22,6 +22,8 @@ struct ProjectsOutput {
 #[derive(Debug, Serialize, JsonSchema)]
 struct ProjectOutput {
     project_id: String,
+    organization_id: String,
+    organization_name: String,
     name: String,
     remote_url: String,
     forge: String,
@@ -87,22 +89,22 @@ struct ErrorMenuTools {
 impl ErrorMenuTools {
     /// List projects available to the authenticated user.
     async fn list_projects(&self) -> Result<StructuredContent<ProjectsOutput>, String> {
-        let projects = Project::list_for(&self.state.database, &self.user)
+        let summaries = Project::summaries_for(&self.state.database, &self.user)
             .await
             .map_err(|error| {
                 tracing::error!(%error, "MCP project listing failed");
                 "could not list projects".to_owned()
             })?;
-        let mut output = Vec::with_capacity(projects.len());
-        for project in projects {
-            let role = ProjectRole::for_user(&self.state.database, &self.user, project.id)
-                .await
-                .map_err(|error| {
-                    tracing::error!(%error, "MCP project authorization failed");
-                    "could not list projects".to_owned()
-                })?
-                .ok_or_else(|| "could not list projects".to_owned())?;
-            output.push(self.project_output(project, role).await?);
+        let mut output = Vec::with_capacity(summaries.len());
+        for summary in summaries {
+            output.push(
+                self.project_output(
+                    summary.project,
+                    summary.organization_name,
+                    summary.viewer_role,
+                )
+                .await?,
+            );
         }
 
         Ok(StructuredContent(ProjectsOutput { projects: output }))
@@ -114,7 +116,11 @@ impl ErrorMenuTools {
         project_id: String,
     ) -> Result<StructuredContent<ProjectOutput>, String> {
         let (project, role) = self.readable_project(&project_id).await?;
-        Ok(StructuredContent(self.project_output(project, role).await?))
+        let organization_name = self.organization_name(project.organization_id).await?;
+
+        Ok(StructuredContent(
+            self.project_output(project, organization_name, role).await?,
+        ))
     }
 
     /// List recorded analyses for one project available to the authenticated user.
@@ -185,9 +191,24 @@ impl ErrorMenuTools {
         Ok((project, role))
     }
 
+    async fn organization_name(
+        &self,
+        organization_id: Id<Organization>,
+    ) -> Result<String, String> {
+        Organization::load(&self.state.database, organization_id)
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, "MCP organization lookup failed");
+                "could not read project".to_owned()
+            })?
+            .map(|organization| organization.name)
+            .ok_or_else(|| "could not read project".to_owned())
+    }
+
     async fn project_output(
         &self,
         project: Project,
+        organization_name: String,
         viewer_role: ProjectRole,
     ) -> Result<ProjectOutput, String> {
         let analyzers = project
@@ -200,6 +221,8 @@ impl ErrorMenuTools {
 
         Ok(ProjectOutput {
             project_id: project.id.encode(),
+            organization_id: project.organization_id.encode(),
+            organization_name,
             name: project.name,
             remote_url: project.remote.to_string(),
             forge: forge_kind(project.forge_kind).to_owned(),

@@ -1,7 +1,30 @@
 # Data model
 
-A finding is a sighting, an issue is the persistent identity, and a signal is a snapshot-level
-opinion.
+An organization owns projects, and a project is the subject of everything below it. A finding is a
+sighting, an issue is the persistent identity, and a signal is a snapshot-level opinion.
+
+## Organization
+
+An organization owns projects. `projects.organization_id` is `NOT NULL`, so every project has
+exactly one, and `organization_members` holds one grant per `(organization_id, user_id)` pair with
+the same three tiers a project grant uses.
+
+```rust
+struct Organization {
+    id: Id<Organization>,
+    name: String,
+    description: Option<String>,
+}
+```
+
+A caller's role on a project is the higher of the grant they hold on the project and the grant they
+inherit from its organization. `ProjectRole` derives `Ord` for that comparison, so the declaration
+order of `Viewer`, `Operator` and `Owner` is the privilege order and reordering it inverts the rule.
+`ProjectRole::for_user` is the only place that resolves it, and every HTTP handler and MCP tool
+reaches it through `project_access` or `readable_project`.
+
+An organization keeps at least one owner. A project does not need its own owner row, because its
+organization always has one.
 
 ## Finding
 

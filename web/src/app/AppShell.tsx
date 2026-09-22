@@ -127,6 +127,9 @@ const AppShellContent = (properties: { children?: JSX.Element; }) => (
           <a href="/" class="text-sm text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100">
             Projects
           </a>
+          <a href="/orgs" class="text-sm text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100">
+            Organizations
+          </a>
         </nav>
         <div class="flex shrink-0 items-center gap-3">
           <AccountControls />

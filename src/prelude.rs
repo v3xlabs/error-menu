@@ -10,6 +10,8 @@ pub use crate::analysis::signal::{NewSignal, Score, Signal, SignalKey, SignalVal
 pub use crate::analysis::{Run, RunStatus};
 pub use crate::database::{Database, DatabaseError};
 pub use crate::id::Id;
+pub use crate::organization::Organization;
+pub use crate::organization::member::{OrganizationMember, OrganizationRole};
 pub use crate::project::member::{ProjectMember, ProjectRole};
 pub use crate::project::person::{Person, PersonRole, Signature};
 pub use crate::project::snapshot::Snapshot;

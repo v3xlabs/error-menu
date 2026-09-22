@@ -88,12 +88,7 @@ impl MemberApi {
             Err(_) => return ProjectMembersResponse::Missing(Json(missing_user())),
         };
         match User::load(&self.state.database, user_id).await {
-            Ok(Some(member)) if member.role != UserRole::Guest => {}
-            Ok(Some(_)) => {
-                return ProjectMembersResponse::Invalid(Json(Error {
-                    message: "a guest must become a member before joining a project".to_owned(),
-                }));
-            }
+            Ok(Some(_)) => {}
             Ok(None) => return ProjectMembersResponse::Missing(Json(missing_user())),
             Err(error) => {
                 return ProjectMembersResponse::Failed(Json(Error {
