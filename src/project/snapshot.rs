@@ -25,6 +25,10 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// The reading of one subject at one head. Discovery records a head when it first
+    /// sees it and analysis records the same head again when it finally scans it, so this
+    /// takes over a reading that has no run behind it rather than leaving it beside the
+    /// one that has. A re-scan of a head that was already analysed is a new reading.
     pub async fn record(
         database: &Database,
         subject_id: Id<Subject>,
@@ -33,14 +37,31 @@ impl Snapshot {
         merge_base: Option<CommitSha>,
         forge: ForgeMetadata,
     ) -> Result<Snapshot, DatabaseError> {
-        let id: Id<Snapshot> = database.ids.next();
         let observed_at = Timestamp::now();
         let mut transaction = database.write().await?;
+        let unscanned: Option<i64> = sqlx::query_scalar(
+            "SELECT n.id FROM snapshots n WHERE n.subject_id = ? AND n.head = ? \
+             AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.snapshot_id = n.id) \
+             ORDER BY n.id LIMIT 1",
+        )
+        .bind(subject_id.raw())
+        .bind(head.as_str())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let id: Id<Snapshot> = unscanned.map_or_else(|| database.ids.next(), Id::from_raw);
 
         sqlx::query(
             "INSERT INTO snapshots \
              (id, subject_id, head, base, merge_base, forge_title, forge_body, forge_author, forge_url, forge_base_ref, forge_head_ref, forge_state, forge_merge_commit, signature_present, signature_verified, signature_signer, signature_reason, observed_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET \
+             base = excluded.base, merge_base = excluded.merge_base, forge_title = excluded.forge_title, \
+             forge_body = excluded.forge_body, forge_author = excluded.forge_author, forge_url = excluded.forge_url, \
+             forge_base_ref = excluded.forge_base_ref, forge_head_ref = excluded.forge_head_ref, \
+             forge_state = excluded.forge_state, forge_merge_commit = excluded.forge_merge_commit, \
+             signature_present = excluded.signature_present, signature_verified = excluded.signature_verified, \
+             signature_signer = excluded.signature_signer, signature_reason = excluded.signature_reason, \
+             observed_at = excluded.observed_at",
         )
         .bind(id.raw())
         .bind(subject_id.raw())
@@ -63,6 +84,10 @@ impl Snapshot {
         .execute(&mut *transaction)
         .await?;
 
+        sqlx::query("DELETE FROM snapshot_people WHERE snapshot_id = ?")
+            .bind(id.raw())
+            .execute(&mut *transaction)
+            .await?;
         insert_people(&mut transaction, &database.ids, id, &forge.people).await?;
 
         transaction.commit().await?;
@@ -107,21 +132,19 @@ impl Snapshot {
         mut forge: ForgeMetadata,
         indexed: Option<&Snapshot>,
     ) -> Result<Snapshot, DatabaseError> {
-        let row =
-            sqlx::query("SELECT * FROM snapshots WHERE subject_id = ? ORDER BY id DESC LIMIT 1")
-                .bind(subject_id.raw())
-                .fetch_optional(&database.pool)
-                .await?;
+        let row = sqlx::query(
+            "SELECT * FROM snapshots WHERE subject_id = ? AND head = ? ORDER BY id DESC LIMIT 1",
+        )
+        .bind(subject_id.raw())
+        .bind(head.as_str())
+        .fetch_optional(&database.pool)
+        .await?;
         let previous_analysis = row
             .as_ref()
             .map(|row| row.try_get::<Option<i64>, _>("analysis_snapshot_id"))
             .transpose()?
             .flatten();
-        let previous = row
-            .as_ref()
-            .map(Snapshot::decode_row)
-            .transpose()?
-            .filter(|snapshot| snapshot.head == head);
+        let previous = row.as_ref().map(Snapshot::decode_row).transpose()?;
         let mut stored_people = match previous.as_ref() {
             Some(snapshot) => snapshot.people(database).await?,
             None => Vec::new(),

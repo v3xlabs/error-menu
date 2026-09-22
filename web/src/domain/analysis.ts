@@ -37,8 +37,8 @@ export const subjectLabel = (subject: Subject): string => {
   }
 };
 
-// Every discovery run records a new snapshot, so the same branch or pull request appears
-// many times. Newest first is the order the API returns.
+// A subject is read once per poll, so the same branch or pull request appears many times.
+// Newest first is the order the API returns.
 export const latestPerSubject = (analyses: readonly Analysis[]): readonly Analysis[] => {
   const seen = new Set<string>();
 
@@ -48,6 +48,21 @@ export const latestPerSubject = (analyses: readonly Analysis[]): readonly Analys
     if (seen.has(key)) return false;
 
     seen.add(key);
+
+    return true;
+  });
+};
+
+// A subject's history is one reading per commit it has pointed at. Scanning one commit
+// more than once says nothing about the subject, so only the newest reading of a commit
+// belongs in the list.
+export const latestPerHead = (analyses: readonly Analysis[]): readonly Analysis[] => {
+  const seen = new Set<string>();
+
+  return analyses.filter((analysis) => {
+    if (seen.has(analysis.head_sha)) return false;
+
+    seen.add(analysis.head_sha);
 
     return true;
   });

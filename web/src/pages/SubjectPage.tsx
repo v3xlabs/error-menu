@@ -14,6 +14,7 @@ import {
   analysisTone,
   distinctPeople,
   forgeKind,
+  latestPerHead,
   mergedChangeFor,
   roleLabel,
   rolesOf,
@@ -37,8 +38,10 @@ export const SubjectPage = () => {
     return current.phase === "loaded" ? current.analyses : [];
   };
   const history = (): readonly Analysis[] =>
-    analyses().filter(
-      analysis => analysis.subject.kind === routeParameters.kind && analysis.subject.key === routeParameters.key,
+    latestPerHead(
+      analyses().filter(
+        analysis => analysis.subject.kind === routeParameters.kind && analysis.subject.key === routeParameters.key,
+      ),
     );
   const current = (): Analysis | undefined => history()[0];
   const mergedBy = (): Analysis | undefined => {

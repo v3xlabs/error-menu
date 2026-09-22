@@ -53,6 +53,12 @@ recorded, its snapshot points at the analysed one through `analysis_snapshot_id`
 reader sees the stored runs. Only a head nobody has analysed receives a pack. Forge metadata,
 review state and CI status still refresh on every poll, because those change without a commit.
 
+A subject holds one reading per commit it has pointed at. Discovery records a head the moment
+it sees it, and a change that waits for its first scan is seen again on every poll, so the
+analysis takes over the reading that has no run behind it rather than writing a second one
+beside it. A reader asking for a re-scan of a head that already has runs gets a new reading:
+that one is a fresh answer, not a repeat of the same sighting.
+
 Anything git publishes is read from git. The default branch and its head come from the ref
 advertisement that opens every connection to the remote, which costs one round trip, no
 objects, and nothing from the forge's request budget. The forge is asked for one thing: the
