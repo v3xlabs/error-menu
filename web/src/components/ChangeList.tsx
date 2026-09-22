@@ -10,7 +10,7 @@ import { CHANGE_STATE_ICONS, CHANGE_STATE_TINT } from "./ChangeStateBadge";
 import { TONE_ICONS, TONE_TINT } from "./Gauge";
 import { SubjectRow } from "./SubjectRow";
 
-export type ChangeFilter = "open" | "merged" | "closed" | "unscanned" | "flagged" | "all";
+export type ChangeFilter = "open" | "draft" | "merged" | "closed" | "unscanned" | "flagged" | "all";
 
 export type ChangeFilterOption = { value: ChangeFilter; label: string; pill: string; icon: () => JSX.Element; };
 
@@ -26,6 +26,7 @@ export const OPEN_CHANGE_FILTER: ChangeFilterOption = {
 // Mutable because the select primitive takes its options as a mutable array.
 export const CHANGE_FILTERS: ChangeFilterOption[] = [
   OPEN_CHANGE_FILTER,
+  { value: "draft", label: "Draft", pill: `${PILL} ${CHANGE_STATE_TINT.draft}`, icon: CHANGE_STATE_ICONS.draft },
   { value: "merged", label: "Merged", pill: `${PILL} ${CHANGE_STATE_TINT.merged}`, icon: CHANGE_STATE_ICONS.merged },
   { value: "closed", label: "Closed", pill: `${PILL} ${CHANGE_STATE_TINT.closed}`, icon: CHANGE_STATE_ICONS.closed },
   { value: "unscanned", label: "Not scanned", pill: `${PILL} ${TONE_TINT.unscanned}`, icon: TONE_ICONS.unscanned },
@@ -37,6 +38,9 @@ export const isInFilter = (analysis: Analysis, filter: ChangeFilter): boolean =>
   switch (filter) {
     case "all": {
       return true;
+    }
+    case "open": {
+      return analysis.forge.state === "open" || analysis.forge.state === "draft";
     }
     case "unscanned": {
       return analysis.analyzers.length === 0;

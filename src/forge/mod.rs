@@ -50,9 +50,13 @@ pub enum ForgeKind {
     Forgejo,
 }
 
+/// A change's lifecycle as the forge tells it. Draft is an open change its author has not
+/// offered for review; a change that closed or merged while still a draft reports the
+/// outcome, because that is what the forge shows and what a reader acts on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChangeState {
+    Draft,
     Open,
     Closed,
     Merged,
@@ -88,6 +92,7 @@ impl FromStored for ForgeKind {
 impl StoredAs for ChangeState {
     fn stored(&self) -> &'static str {
         match self {
+            Self::Draft => "draft",
             Self::Open => "open",
             Self::Closed => "closed",
             Self::Merged => "merged",
@@ -100,6 +105,7 @@ impl FromStored for ChangeState {
 
     fn parse_stored(value: &str) -> Option<Self> {
         match value {
+            "draft" => Some(Self::Draft),
             "open" => Some(Self::Open),
             "closed" => Some(Self::Closed),
             "merged" => Some(Self::Merged),
