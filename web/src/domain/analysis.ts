@@ -118,6 +118,11 @@ export const subjectsOfPerson = (analyses: readonly Analysis[], identity: string
 export const subjectPath = (projectId: string, analysis: Analysis): string =>
   `/projects/${projectId}/${analysis.subject.kind}/${encodeURIComponent(analysis.subject.key)}`;
 
+// A subject page shows its newest reading unless the URL names a head, so a link that
+// means one commit has to carry that commit's sha.
+export const scanPath = (projectId: string, analysis: Analysis): string =>
+  `${subjectPath(projectId, analysis)}?head=${analysis.head_sha}`;
+
 // The commit a merged change landed as. It links a default-branch commit back to the
 // change that carried it.
 export const mergedChangeFor = (analyses: readonly Analysis[], headSha: string): Analysis | undefined =>
