@@ -1859,7 +1859,7 @@ export interface components {
             tokens: components["schemas"]["ApiTokenOutput"][];
         };
         /** @enum {string} */
-        ChangeStateOutput: "open" | "closed" | "merged";
+        ChangeStateOutput: "draft" | "open" | "closed" | "merged";
         /** CheckRunOutput */
         CheckRunOutput: {
             name: string;

@@ -128,9 +128,10 @@ export const mergedChangeFor = (analyses: readonly Analysis[], headSha: string):
 export const scanned = (analyses: readonly Analysis[]): readonly Analysis[] =>
   analyses.filter(analysis => analysis.analyzers.length > 0);
 
-// An open change is the one a reviewer can still act on, so it leads the list. Within a
-// state the newest number is the most recent work.
-const STATE_ORDER: Record<NonNullable<Analysis["forge"]["state"]>, number> = { open: 0, merged: 1, closed: 2 };
+// An open change is the one a reviewer can still act on, so it leads the list, and a draft
+// follows it because its author has not asked for review yet. Within a state the newest
+// number is the most recent work.
+const STATE_ORDER: Record<NonNullable<Analysis["forge"]["state"]>, number> = { open: 0, draft: 1, merged: 2, closed: 3 };
 
 export const byReviewOrder = (analyses: readonly Analysis[]): readonly Analysis[] =>
   analyses.toSorted((left, right) => {

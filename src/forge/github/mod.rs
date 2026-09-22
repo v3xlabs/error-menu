@@ -146,6 +146,8 @@ struct GithubPull {
     title: String,
     body: Option<String>,
     state: String,
+    #[serde(default)]
+    draft: bool,
     merged_at: Option<String>,
     merge_commit_sha: Option<String>,
     user: GithubUser,
@@ -188,6 +190,8 @@ impl TryFrom<GithubPull> for DiscoveredChange {
             ChangeState::Merged
         } else if change.state == "closed" {
             ChangeState::Closed
+        } else if change.draft {
+            ChangeState::Draft
         } else {
             ChangeState::Open
         };
@@ -272,4 +276,45 @@ fn account_of(
         login: account.login,
         avatar_url: account.avatar_url,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn state_of(state: &str, draft: bool, merged_at: Option<&str>) -> ChangeState {
+        let pull: GithubPull = serde_json::from_value(json!({
+            "number": 7,
+            "html_url": "https://github.com/owner/repository/pull/7",
+            "title": "a change",
+            "body": null,
+            "state": state,
+            "draft": draft,
+            "merged_at": merged_at,
+            "merge_commit_sha": null,
+            "user": { "login": "author", "avatar_url": null },
+            "base": { "sha": "1".repeat(40), "ref": "main" },
+            "head": { "sha": "2".repeat(40), "ref": "work" },
+        }))
+        .expect("the payload matches what the pulls endpoint answers with");
+
+        DiscoveredChange::try_from(pull)
+            .expect("both shas are well formed")
+            .metadata
+            .state
+            .expect("a pull request always has a state")
+    }
+
+    #[test]
+    fn draft_yields_to_the_outcome_a_change_reached() {
+        assert_eq!(state_of("open", true, None), ChangeState::Draft);
+        assert_eq!(state_of("open", false, None), ChangeState::Open);
+        assert_eq!(state_of("closed", true, None), ChangeState::Closed);
+        assert_eq!(
+            state_of("closed", true, Some("2026-09-22T00:00:00Z")),
+            ChangeState::Merged
+        );
+    }
 }

@@ -83,15 +83,14 @@ export const ProjectDashboard = (properties: ProjectDashboardProperties) => {
   const latest = (): readonly Analysis[] => latestPerSubject(properties.analyses);
   const branches = (): readonly Analysis[] => latest().filter(analysis => analysis.subject.kind === "branch");
   const changes = (): readonly Analysis[] => byReviewOrder(latest().filter(analysis => analysis.subject.kind === "change"));
-  const openChanges = (): number => changes().filter(analysis => analysis.forge.state === "open").length;
+  const open = (): readonly Analysis[] => changes().filter(analysis => isInFilter(analysis, "open"));
   // Grouping walks every finding of every subject, and one pnpm lockfile can carry ten
   // thousand, so it runs once per analyses change rather than once per read.
   const withDependencies = createMemo(() =>
     latest()
       .map(analysis => ({ analysis, files: dependencyFiles(findingsOf(analysis)) }))
       .filter(entry => entry.files.length > 0));
-  const openExcerpt = (): readonly Analysis[] => changes().filter(analysis => analysis.forge.state === "open")
-    .slice(0, 4);
+  const openExcerpt = (): readonly Analysis[] => open().slice(0, 4);
   const filteredChanges = (): readonly Analysis[] => changes().filter(analysis => isInFilter(analysis, filter()));
   const countFor = (option: ChangeFilter): number => changes().filter(analysis => isInFilter(analysis, option)).length;
   const defaultBranchName = (): string | undefined => {
@@ -124,7 +123,7 @@ export const ProjectDashboard = (properties: ProjectDashboardProperties) => {
         </div>
         <div class="p-4">
           <p class="text-xs font-medium tracking-wide text-slate-500 uppercase dark:text-slate-400">Open pull requests</p>
-          <p class="mt-2 text-lg font-semibold text-slate-900 dark:text-slate-100">{openChanges()}</p>
+          <p class="mt-2 text-lg font-semibold text-slate-900 dark:text-slate-100">{open().length}</p>
           <ul class="mt-1 space-y-0.5">
             <For
               each={openExcerpt()}
@@ -149,8 +148,8 @@ export const ProjectDashboard = (properties: ProjectDashboardProperties) => {
           <Tabs.Trigger value="timeline" class={TAB_TRIGGER}>Timeline</Tabs.Trigger>
           <Tabs.Trigger value="pull-requests" class={TAB_TRIGGER}>
             Pull requests
-            <Show when={openChanges() > 0}>
-              <span class="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-xs tabular-nums dark:bg-slate-800">{openChanges()}</span>
+            <Show when={open().length > 0}>
+              <span class="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-xs tabular-nums dark:bg-slate-800">{open().length}</span>
             </Show>
           </Tabs.Trigger>
           <Tabs.Trigger value="dependencies" class={TAB_TRIGGER}>Dependencies</Tabs.Trigger>

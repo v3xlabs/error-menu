@@ -170,7 +170,11 @@ async fn read_change(
     change: DiscoveredChange,
 ) -> Result<ChangeAnalysis, DiscoveryError> {
     let indexed = Snapshot::indexed(&state.database, project.id, &change.head).await?;
-    if change.metadata.state == Some(ChangeState::Open) && indexed.is_none() {
+    let open = matches!(
+        change.metadata.state,
+        Some(ChangeState::Open | ChangeState::Draft)
+    );
+    if open && indexed.is_none() {
         let mirror = with_objects(mirror, fetched).await?;
         return analyse_change(state, project, mirror, change).await;
     }

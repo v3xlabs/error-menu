@@ -343,6 +343,7 @@ struct SubjectOutput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
 #[oai(rename_all = "snake_case")]
 enum ChangeStateOutput {
+    Draft,
     Open,
     Closed,
     Merged,
@@ -643,6 +644,7 @@ fn subject_output(kind: SubjectKind) -> SubjectOutput {
 
 fn change_state_output(state: ChangeState) -> ChangeStateOutput {
     match state {
+        ChangeState::Draft => ChangeStateOutput::Draft,
         ChangeState::Open => ChangeStateOutput::Open,
         ChangeState::Closed => ChangeStateOutput::Closed,
         ChangeState::Merged => ChangeStateOutput::Merged,
