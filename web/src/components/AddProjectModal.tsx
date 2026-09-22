@@ -152,13 +152,13 @@ export const AddProjectModal = (properties: { onCreated: () => void; }) => {
 
   return (
     <Dialog open={isOpen()} onOpenChange={handleOpenChange}>
-      <Dialog.Trigger class="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white">
+      <Dialog.Trigger class="rounded-control bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white">
         Add project
       </Dialog.Trigger>
       <Dialog.Portal>
         <Dialog.Overlay class="fixed inset-0 z-40 bg-slate-950/40" />
         <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <Dialog.Content class="w-full max-w-md rounded-lg border border-slate-200 bg-white p-5 shadow-xl dark:border-slate-800 dark:bg-slate-900">
+          <Dialog.Content class="w-full max-w-md rounded-panel bg-surface p-5 shadow-xl">
             <div class="flex items-center gap-1.5">
               <Dialog.Title class="text-base font-semibold text-slate-900 dark:text-slate-100">Add project</Dialog.Title>
               <InfoTip
@@ -192,7 +192,7 @@ export const AddProjectModal = (properties: { onCreated: () => void; }) => {
                       required
                       value={selectedOrganizationId() ?? ""}
                       onChange={event => setChosenOrganizationId(event.currentTarget.value)}
-                      class="w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                      class="w-full rounded-control bg-raised px-3 py-1.5 text-sm text-slate-900 dark:text-slate-100"
                     >
                       <For each={ownedOrganizations()}>
                         {organization => <option value={organization.organization_id}>{organization.name}</option>}
@@ -209,7 +209,7 @@ export const AddProjectModal = (properties: { onCreated: () => void; }) => {
                       value={remoteUrl()}
                       onInput={event => setRemoteUrl(event.currentTarget.value)}
                       placeholder="https://github.com/acme/example"
-                      class="w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                      class="w-full rounded-control bg-raised px-3 py-1.5 text-sm text-slate-900 dark:text-slate-100"
                     />
                   </div>
                   <div class="space-y-1.5">
@@ -222,7 +222,7 @@ export const AddProjectModal = (properties: { onCreated: () => void; }) => {
                       value={displayName()}
                       onInput={event => setDisplayName(event.currentTarget.value)}
                       placeholder="example"
-                      class="w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                      class="w-full rounded-control bg-raised px-3 py-1.5 text-sm text-slate-900 dark:text-slate-100"
                     />
                   </div>
                   <fieldset class="space-y-3">
@@ -259,10 +259,10 @@ export const AddProjectModal = (properties: { onCreated: () => void; }) => {
               </Switch>
               {errorMessage() !== null && <p class="text-sm text-red-600 dark:text-red-400">{errorMessage()}</p>}
               <div class="flex justify-end gap-2 pt-1">
-                <Dialog.CloseButton class="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 dark:border-slate-700 dark:text-slate-300">
+                <Dialog.CloseButton class="rounded-control bg-raised px-3 py-1.5 text-sm text-slate-700 hover:bg-raised-hover dark:text-slate-300">
                   Cancel
                 </Dialog.CloseButton>
-                <button type="submit" disabled={isSubmitting() || ownedOrganizations().length === 0} class="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white">
+                <button type="submit" disabled={isSubmitting() || ownedOrganizations().length === 0} class="rounded-control bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white">
                   {isSubmitting() ? "Adding..." : "Add project"}
                 </button>
               </div>

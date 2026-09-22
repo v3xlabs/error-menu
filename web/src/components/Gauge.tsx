@@ -45,7 +45,7 @@ export const Gauge = (properties: { tone: StatusTone; value: number | string; la
       {properties.value}
     </Tooltip.Trigger>
     <Tooltip.Portal>
-      <Tooltip.Content class="z-50 rounded-md bg-slate-900 px-2.5 py-1.5 text-xs text-white dark:bg-slate-100 dark:text-slate-900">
+      <Tooltip.Content class="z-50 rounded-control bg-slate-900 px-2.5 py-1.5 text-xs text-white dark:bg-slate-100 dark:text-slate-900">
         <Tooltip.Arrow />
         {properties.label}
       </Tooltip.Content>

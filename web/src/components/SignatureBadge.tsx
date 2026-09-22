@@ -39,7 +39,7 @@ export const SignatureBadge = (properties: { signature: Signature; }) => (
           </Show>
         </Tooltip.Trigger>
         <Tooltip.Portal>
-          <Tooltip.Content class="z-50 max-w-xs rounded-md bg-slate-900 px-2.5 py-1.5 text-xs text-white dark:bg-slate-100 dark:text-slate-900">
+          <Tooltip.Content class="z-50 max-w-xs rounded-control bg-slate-900 px-2.5 py-1.5 text-xs text-white dark:bg-slate-100 dark:text-slate-900">
             <Tooltip.Arrow />
             {state().label}
           </Tooltip.Content>

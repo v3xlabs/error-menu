@@ -17,7 +17,7 @@ const AnalyzerRow = (properties: {
     <li>
       <label
         for={checkbox_id}
-        class="flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800/60"
+        class="flex cursor-pointer items-center gap-2.5 px-4 py-2.5 text-sm text-slate-700 hover:bg-raised dark:text-slate-200"
       >
         <span class="shrink-0 text-slate-500 dark:text-slate-400"><properties.analyzer.icon size={14} /></span>
         <span class="truncate font-medium">{properties.analyzer.label}</span>
@@ -41,7 +41,7 @@ export const AnalyzerSelect = (properties: {
   selected: readonly AnalyzerId[];
   onToggle: (analyzerId: AnalyzerId) => void;
 }) => (
-  <ul class="divide-y divide-slate-200 rounded-md border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+  <ul class="divide-y divide-hairline">
     <For each={ANALYZERS}>
       {analyzer => (
         <AnalyzerRow

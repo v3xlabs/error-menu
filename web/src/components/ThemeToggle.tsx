@@ -44,7 +44,7 @@ export const ThemeToggle = () => {
       onClick={toggleTheme}
       aria-label={theme() === "dark" ? "Switch to light mode" : "Switch to dark mode"}
       title={theme() === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-      class="flex size-8 items-center justify-center rounded-md border border-slate-300 text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+      class="flex size-8 items-center justify-center rounded-control bg-raised text-slate-700 hover:bg-raised-hover dark:text-slate-300"
     >
       <Show when={theme() === "dark"} fallback={<FiMoon size={16} />}>
         <FiSun size={16} />

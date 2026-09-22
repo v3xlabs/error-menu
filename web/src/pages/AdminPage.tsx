@@ -94,13 +94,13 @@ const UsersSection = (properties: { onChanged: () => void; }) => {
       <Show when={loadError()}>{message => <p class="mt-4 text-sm text-red-600 dark:text-red-400" role="alert">{message()}</p>}</Show>
       <Show when={users()}>
         {loadedUsers => (
-          <ul class="mt-4 divide-y divide-slate-200 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+          <ul class="mt-4 divide-y divide-hairline rounded-panel bg-surface">
             <For
               each={loadedUsers()}
-              fallback={<li class="px-3 py-6 text-center text-sm text-slate-500 dark:text-slate-400">No signed-in users yet.</li>}
+              fallback={<li class="px-5 py-8 text-center text-sm text-slate-500 dark:text-slate-400">No signed-in users yet.</li>}
             >
               {user => (
-                <li class="flex items-center justify-between gap-4 px-3 py-2.5">
+                <li class="flex items-center justify-between gap-4 px-5 py-3">
                   <div class="min-w-0">
                     <p class="truncate text-sm font-medium text-slate-900 dark:text-slate-100">{user.display_name}</p>
                     <p class="truncate font-mono text-xs text-slate-500 dark:text-slate-400">{user.user_id}</p>
@@ -110,7 +110,7 @@ const UsersSection = (properties: { onChanged: () => void; }) => {
                       value={user.role}
                       disabled={savingUserId() === user.user_id}
                       onChange={event => handleRoleChange(user.user_id, event.currentTarget.value)}
-                      class="rounded-md border border-slate-300 bg-white px-2 py-1 text-sm text-slate-900 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                      class="rounded-control bg-raised px-2 py-1 text-sm text-slate-900 disabled:cursor-not-allowed disabled:opacity-60 dark:text-slate-100"
                     >
                       <For each={USER_ROLES}>{role => <option value={role}>{role}</option>}</For>
                     </select>
@@ -167,13 +167,13 @@ const OrganizationsSection = () => {
       <Show when={loadError()}>{message => <p class="mt-4 text-sm text-red-600 dark:text-red-400" role="alert">{message()}</p>}</Show>
       <Show when={organizations()}>
         {loadedOrganizations => (
-          <ul class="mt-4 divide-y divide-slate-200 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+          <ul class="mt-4 divide-y divide-hairline rounded-panel bg-surface">
             <For
               each={loadedOrganizations()}
-              fallback={<li class="px-3 py-6 text-center text-sm text-slate-500 dark:text-slate-400">No organization yet.</li>}
+              fallback={<li class="px-5 py-8 text-center text-sm text-slate-500 dark:text-slate-400">No organization yet.</li>}
             >
               {organization => (
-                <li class="flex items-center justify-between gap-4 px-3 py-2.5">
+                <li class="flex items-center justify-between gap-4 px-5 py-3">
                   <div class="min-w-0">
                     <a
                       href={`/orgs/${organization.organization_id}`}

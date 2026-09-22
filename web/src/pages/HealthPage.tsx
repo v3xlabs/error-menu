@@ -38,7 +38,7 @@ export const HealthPage = () => {
   return (
     <div class="space-y-4">
       <h1 class="text-lg font-semibold">Health</h1>
-      <div class="rounded-lg border border-slate-200 p-4 dark:border-slate-800">{renderHealthState(state())}</div>
+      <div class="rounded-panel bg-surface p-5">{renderHealthState(state())}</div>
     </div>
   );
 };

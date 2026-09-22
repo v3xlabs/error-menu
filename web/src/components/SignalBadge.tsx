@@ -2,10 +2,10 @@ import type { Signal, SignalConcern } from "../domain/signal";
 import { formatSignalValue, signalConcern, signalLabel } from "../domain/signal";
 
 const CONTAINER_STYLES: Record<SignalConcern, string> = {
-  calm: "rounded-lg border px-3 py-2 border-emerald-200 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/40",
-  elevated: "rounded-lg border px-3 py-2 border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/40",
-  alarming: "rounded-lg border px-3 py-2 border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/40",
-  neutral: "rounded-lg border px-3 py-2 border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900/40",
+  calm: "rounded-panel px-3 py-2 bg-emerald-50 dark:bg-emerald-950/40",
+  elevated: "rounded-panel px-3 py-2 bg-amber-50 dark:bg-amber-950/40",
+  alarming: "rounded-panel px-3 py-2 bg-red-50 dark:bg-red-950/40",
+  neutral: "rounded-panel px-3 py-2 bg-raised",
 };
 
 const VALUE_STYLES: Record<SignalConcern, string> = {

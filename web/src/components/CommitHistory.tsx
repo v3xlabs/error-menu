@@ -37,12 +37,12 @@ const CommitRow = (properties: { commit: Commit; scan: Analysis | undefined; pro
   <li class="group relative flex gap-3">
     <span
       aria-hidden="true"
-      class="absolute top-4 bottom-0 left-[4.5px] w-px bg-slate-200 group-last:hidden dark:bg-slate-800"
+      class="absolute top-4 bottom-0 left-[4.5px] w-px bg-hairline group-last:hidden"
     />
     <span class="relative mt-1.5 shrink-0">
       <Show
         when={properties.scan}
-        fallback={<span class="block size-2.5 rounded-full border border-slate-300 bg-slate-50 dark:border-slate-700 dark:bg-slate-950" />}
+        fallback={<span class="block size-2.5 rounded-full border border-slate-400 dark:border-slate-600" />}
       >
         {scan => <StatusDot tone={analysisTone(scan())} />}
       </Show>
@@ -65,7 +65,7 @@ const CommitRow = (properties: { commit: Commit; scan: Analysis | undefined; pro
         <Tooltip>
           <Tooltip.Trigger as="span" class="font-mono">{properties.commit.sha.slice(0, 7)}</Tooltip.Trigger>
           <Tooltip.Portal>
-            <Tooltip.Content class="z-50 rounded-md bg-slate-900 px-2.5 py-1.5 font-mono text-xs text-white dark:bg-slate-100 dark:text-slate-900">
+            <Tooltip.Content class="z-50 rounded-control bg-slate-900 px-2.5 py-1.5 font-mono text-xs text-white dark:bg-slate-100 dark:text-slate-900">
               <Tooltip.Arrow />
               {properties.commit.sha}
             </Tooltip.Content>
@@ -96,7 +96,7 @@ export const CommitHistory = (properties: {
     properties.analyses.find(analysis => analysis.head_sha === sha);
 
   return (
-    <ol class="space-y-0">
+    <ol class="space-y-0 rounded-panel bg-surface p-5">
       <For
         each={properties.commits}
         fallback={<li class="text-sm text-slate-500 dark:text-slate-500">No commit is readable yet.</li>}

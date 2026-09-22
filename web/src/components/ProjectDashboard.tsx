@@ -18,6 +18,7 @@ import { CountRow, movementSlots } from "./Counts";
 import { DependencyFileList } from "./DependencyFiles";
 import { StatusDot, toneLabel } from "./StatusDot";
 import { SubjectRow } from "./SubjectRow";
+import { TAB_LIST, TAB_TRIGGER } from "./Tabs";
 
 export type ProjectDashboardProperties = {
   projectId: string;
@@ -29,8 +30,6 @@ export type ProjectDashboardProperties = {
   onDiscover: () => void;
   onAnalysed: () => void;
 };
-
-const TAB_TRIGGER = "-mb-px border-b-2 border-transparent px-1 pb-2 text-sm font-medium text-slate-500 hover:text-slate-800 data-[selected]:border-slate-900 data-[selected]:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200 dark:data-[selected]:border-slate-100 dark:data-[selected]:text-slate-100";
 
 const ToneValue = (properties: { tone: StatusTone | null; }) => (
   <Show when={properties.tone} fallback={<span class="text-slate-500 dark:text-slate-500">No data</span>}>
@@ -72,7 +71,7 @@ const DependencyRow = (properties: { analysis: Analysis; files: readonly Depende
 );
 
 const empty = (message: string): JSX.Element => (
-  <p class="rounded-lg border border-dashed border-slate-300 px-4 py-6 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-500">
+  <p class="rounded-panel bg-surface px-4 py-6 text-center text-sm text-slate-500 dark:text-slate-500">
     {message}
   </p>
 );
@@ -104,8 +103,8 @@ export const ProjectDashboard = (properties: ProjectDashboardProperties) => {
       <Show when={properties.discoverError}>
         {message => <p class="text-sm text-red-600 dark:text-red-400">{message()}</p>}
       </Show>
-      <div class="grid divide-y divide-slate-200 rounded-lg border border-slate-200 sm:grid-cols-2 sm:divide-x sm:divide-y-0 dark:divide-slate-800 dark:border-slate-800">
-        <div class="min-w-0 p-4">
+      <div class="grid divide-y divide-hairline rounded-panel bg-surface sm:grid-cols-2 sm:divide-x sm:divide-y-0">
+        <div class="min-w-0 p-5">
           <p class="text-xs font-medium tracking-wide text-slate-500 uppercase dark:text-slate-400">Default branch</p>
           <p class="mt-2 flex items-center gap-2 text-lg font-semibold text-slate-900 dark:text-slate-100">
             <ToneValue tone={worstTone(branches().map(analysis => analysisTone(analysis)))} />
@@ -121,7 +120,7 @@ export const ProjectDashboard = (properties: ProjectDashboardProperties) => {
             )}
           </Show>
         </div>
-        <div class="p-4">
+        <div class="p-5">
           <p class="text-xs font-medium tracking-wide text-slate-500 uppercase dark:text-slate-400">Open pull requests</p>
           <p class="mt-2 text-lg font-semibold text-slate-900 dark:text-slate-100">{open().length}</p>
           <ul class="mt-1 space-y-0.5">
@@ -144,12 +143,12 @@ export const ProjectDashboard = (properties: ProjectDashboardProperties) => {
       </div>
 
       <Tabs>
-        <Tabs.List class="flex gap-6 border-b border-slate-200 dark:border-slate-800">
+        <Tabs.List class={TAB_LIST}>
           <Tabs.Trigger value="timeline" class={TAB_TRIGGER}>Timeline</Tabs.Trigger>
           <Tabs.Trigger value="pull-requests" class={TAB_TRIGGER}>
             Pull requests
             <Show when={open().length > 0}>
-              <span class="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-xs tabular-nums dark:bg-slate-800">{open().length}</span>
+              <span class="ml-2 rounded-full bg-raised px-2 py-0.5 text-xs tabular-nums">{open().length}</span>
             </Show>
           </Tabs.Trigger>
           <Tabs.Trigger value="dependencies" class={TAB_TRIGGER}>Dependencies</Tabs.Trigger>
@@ -158,9 +157,6 @@ export const ProjectDashboard = (properties: ProjectDashboardProperties) => {
         <Tabs.Content value="timeline" class="pt-4">
           <div class="space-y-6">
             <section class="space-y-3">
-              <h3 class="text-sm font-semibold tracking-wide text-slate-500 uppercase dark:text-slate-400">
-                {defaultBranchName() ?? "Default branch"}
-              </h3>
               <Show when={properties.commits.length > 0} fallback={empty("Run discovery to read the default branch.")}>
                 <CommitHistory
                   projectId={properties.projectId}
@@ -214,7 +210,7 @@ export const ProjectDashboard = (properties: ProjectDashboardProperties) => {
               </Select.Icon>
             </Select.Trigger>
             <Select.Portal>
-              <Select.Content class="z-50 min-w-52 rounded-md border border-slate-200 bg-white p-1 shadow-lg dark:border-slate-800 dark:bg-slate-900">
+              <Select.Content class="z-50 min-w-52 rounded-panel bg-surface p-1 shadow-lg">
                 <Select.Listbox class="space-y-1" />
               </Select.Content>
             </Select.Portal>
@@ -234,12 +230,12 @@ export const ProjectDashboard = (properties: ProjectDashboardProperties) => {
                 <Tooltip.Trigger
                   type="button"
                   aria-disabled="true"
-                  class="cursor-not-allowed rounded-md border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-500 opacity-70 dark:border-slate-700 dark:text-slate-400"
+                  class="cursor-not-allowed rounded-control bg-raised px-2.5 py-1 text-xs font-medium text-slate-500 opacity-70 dark:text-slate-400"
                 >
                   Upgrade recommendations
                 </Tooltip.Trigger>
                 <Tooltip.Portal>
-                  <Tooltip.Content class="z-50 rounded-md bg-slate-900 px-2.5 py-1.5 text-xs text-white dark:bg-slate-100 dark:text-slate-900">
+                  <Tooltip.Content class="z-50 rounded-control bg-slate-900 px-2.5 py-1.5 text-xs text-white dark:bg-slate-100 dark:text-slate-900">
                     <Tooltip.Arrow />
                     error.menu reads no package registry, so it cannot recommend an upgrade yet.
                   </Tooltip.Content>

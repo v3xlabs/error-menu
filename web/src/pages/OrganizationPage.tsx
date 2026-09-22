@@ -20,7 +20,7 @@ type ProjectsState
 type SaveState = { phase: "ready"; } | { phase: "saving"; } | { phase: "error"; message: string; };
 type DeleteState = { phase: "ready"; } | { phase: "deleting"; } | { phase: "error"; message: string; };
 
-const FIELD = "w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-900 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100";
+const FIELD = "w-full rounded-control bg-raised px-3 py-1.5 text-sm text-slate-900 disabled:cursor-not-allowed disabled:opacity-60 dark:text-slate-100";
 
 const renderProjects = (state: ProjectsState): JSX.Element => {
   switch (state.phase) {
@@ -32,12 +32,12 @@ const renderProjects = (state: ProjectsState): JSX.Element => {
     }
     case "loaded": {
       return (
-        <Show when={state.projects.length > 0} fallback={<p class="rounded-lg border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-500">No projects in this organization yet.</p>}>
-          <ul class="divide-y divide-slate-200 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+        <Show when={state.projects.length > 0} fallback={<p class="rounded-panel bg-surface px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-500">No projects in this organization yet.</p>}>
+          <ul class="divide-y divide-hairline rounded-panel bg-surface">
             <For each={state.projects}>
               {project => (
                 <li>
-                  <a href={`/projects/${project.project_id}`} class="flex items-center justify-between gap-4 px-4 py-3 hover:bg-slate-100 dark:hover:bg-slate-900">
+                  <a href={`/projects/${project.project_id}`} class="flex items-center justify-between gap-4 px-5 py-3.5 hover:bg-raised">
                     <ProjectMark project={project} size={32} />
                     <div class="min-w-0 flex-1">
                       <p class="text-sm font-medium text-slate-900 dark:text-slate-100">{project.name}</p>
@@ -136,7 +136,7 @@ const OrganizationSettings = (properties: {
   };
 
   return (
-    <section class="border-t border-slate-200 pt-6 dark:border-slate-800">
+    <section class="border-t border-hairline pt-6">
       <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">Settings</h2>
       <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Rename this organization or rewrite what it is for.</p>
       <form class="mt-4 space-y-3" onSubmit={event => void save(event)}>
@@ -173,7 +173,7 @@ const OrganizationSettings = (properties: {
         <button
           type="submit"
           disabled={saveState().phase === "saving"}
-          class="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white"
+          class="rounded-control bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white"
         >
           {saveState().phase === "saving" ? "Saving..." : "Save"}
         </button>

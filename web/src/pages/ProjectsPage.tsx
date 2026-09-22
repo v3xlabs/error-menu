@@ -52,14 +52,14 @@ const renderProjects = (state: ProjectsState): JSX.Element => {
       return <p class="text-sm text-slate-500 dark:text-slate-500">Loading projects...</p>;
     }
     case "anonymous": {
-      return <p class="rounded-lg border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-500">Sign in to view projects.</p>;
+      return <p class="rounded-panel bg-surface px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-500">Sign in to view projects.</p>;
     }
     case "error": {
       return <p class="text-sm text-red-600 dark:text-red-400" role="alert">{state.message}</p>;
     }
     case "loaded": {
       return (
-        <Show when={state.projects.length > 0} fallback={<p class="rounded-lg border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-500">No projects yet.</p>}>
+        <Show when={state.projects.length > 0} fallback={<p class="rounded-panel bg-surface px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-500">No projects yet.</p>}>
           <div class="space-y-6">
             <For each={groupByOrganization(state.projects)}>
               {group => (
@@ -67,11 +67,11 @@ const renderProjects = (state: ProjectsState): JSX.Element => {
                   <h2 class="text-sm font-semibold text-slate-700 dark:text-slate-300">
                     <a href={`/orgs/${group.organizationId}`} class="hover:underline">{group.organizationName}</a>
                   </h2>
-                  <ul class="divide-y divide-slate-200 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+                  <ul class="divide-y divide-hairline rounded-panel bg-surface">
                     <For each={group.projects}>
                       {project => (
                         <li>
-                          <a href={`/projects/${project.project_id}`} class="flex items-center justify-between gap-4 px-4 py-3 hover:bg-slate-100 dark:hover:bg-slate-900">
+                          <a href={`/projects/${project.project_id}`} class="flex items-center justify-between gap-4 px-5 py-3.5 hover:bg-raised">
                             <ProjectMark project={project} size={32} />
                             <div class="min-w-0 flex-1">
                               <p class="text-sm font-medium text-slate-900 dark:text-slate-100">{project.name}</p>

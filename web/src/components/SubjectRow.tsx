@@ -25,7 +25,7 @@ export const SubjectRow = (properties: {
     }));
 
   return (
-    <div class="rounded-md border border-slate-200 px-3 py-2 dark:border-slate-800">
+    <div class="rounded-panel bg-surface px-4 py-3">
       <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
         <span class="flex min-w-0 items-center gap-2">
           <ChangeStateBadge state={properties.analysis.forge.state} />
@@ -57,7 +57,7 @@ export const SubjectRow = (properties: {
               {properties.analysis.head_sha.slice(0, 7)}
             </Tooltip.Trigger>
             <Tooltip.Portal>
-              <Tooltip.Content class="z-50 rounded-md bg-slate-900 px-2.5 py-1.5 font-mono text-xs text-white dark:bg-slate-100 dark:text-slate-900">
+              <Tooltip.Content class="z-50 rounded-control bg-slate-900 px-2.5 py-1.5 font-mono text-xs text-white dark:bg-slate-100 dark:text-slate-900">
                 <Tooltip.Arrow />
                 {properties.analysis.head_sha}
               </Tooltip.Content>

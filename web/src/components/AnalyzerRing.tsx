@@ -128,7 +128,7 @@ export const AnalyzerRing = (properties: { entries: readonly AnalyzerRingEntry[]
         </svg>
       </Tooltip.Trigger>
       <Tooltip.Portal>
-        <Tooltip.Content class="z-50 rounded-md bg-slate-900 px-2.5 py-1.5 text-xs text-white dark:bg-slate-100 dark:text-slate-900">
+        <Tooltip.Content class="z-50 rounded-control bg-slate-900 px-2.5 py-1.5 text-xs text-white dark:bg-slate-100 dark:text-slate-900">
           <Tooltip.Arrow />
           <Show when={entries().length > 0} fallback={<span>No analyzer has run.</span>}>
             <ul class="space-y-1">

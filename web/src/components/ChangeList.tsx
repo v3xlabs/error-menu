@@ -110,7 +110,7 @@ export const ChangeList = (properties: {
     <Show
       when={properties.analyses.length > 0}
       fallback={(
-        <p class="rounded-lg border border-dashed border-slate-300 px-4 py-6 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-500">
+        <p class="rounded-panel bg-surface px-5 py-8 text-center text-sm text-slate-500 dark:text-slate-500">
           Nothing matches this filter.
         </p>
       )}
