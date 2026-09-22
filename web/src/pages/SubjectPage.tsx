@@ -20,7 +20,6 @@ import {
   rolesOf,
   scanPath,
   subjectLabel,
-  subjectPath,
 } from "../domain/analysis";
 
 type RunState = { phase: "ready"; } | { phase: "running"; } | { phase: "error"; message: string; };
@@ -163,7 +162,7 @@ export const SubjectPage = () => {
             <p class="flex flex-wrap items-center gap-2 rounded-control bg-violet-50 px-4 py-2.5 text-sm text-violet-900 dark:bg-violet-950/40 dark:text-violet-200">
               Merged by
               <ChangeStateBadge state={change().forge.state} />
-              <a href={subjectPath(routeParameters.projectId, change())} class="font-medium underline">
+              <a href={scanPath(routeParameters.projectId, change())} class="font-medium underline">
                 {subjectLabel(change().subject)}
                 <Show when={change().forge.title}>
                   {title => (

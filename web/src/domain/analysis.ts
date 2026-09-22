@@ -124,9 +124,9 @@ export const scanPath = (projectId: string, analysis: Analysis): string =>
   `${subjectPath(projectId, analysis)}?head=${analysis.head_sha}`;
 
 // The commit a merged change landed as. It links a default-branch commit back to the
-// change that carried it.
+// reading of the change that recorded the merge, newest first.
 export const mergedChangeFor = (analyses: readonly Analysis[], headSha: string): Analysis | undefined =>
-  latestPerSubject(analyses).find(analysis => analysis.forge.merge_commit_sha === headSha);
+  analyses.find(analysis => analysis.forge.merge_commit_sha === headSha);
 
 // A closed or merged change is recorded for its history rather than scanned, so it never
 // ran an analyzer. The timeline is about work error.menu actually did.
