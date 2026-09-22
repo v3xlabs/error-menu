@@ -67,7 +67,7 @@ const renderProjects = (state: ProjectsState): JSX.Element => {
                   <h2 class="text-sm font-semibold text-slate-700 dark:text-slate-300">
                     <a href={`/orgs/${group.organizationId}`} class="hover:underline">{group.organizationName}</a>
                   </h2>
-                  <ul class="divide-y divide-hairline rounded-panel bg-surface">
+                  <ul class="divide-y divide-hairline overflow-hidden rounded-panel bg-surface">
                     <For each={group.projects}>
                       {project => (
                         <li>

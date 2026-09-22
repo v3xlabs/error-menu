@@ -20,6 +20,7 @@ import { ANALYZERS } from "../domain/analyzer";
 import { AnalyzerSelect } from "./AnalyzerSelect";
 import { IconPicker } from "./IconPicker";
 import { InfoTip } from "./InfoTip";
+import { ProjectCustody } from "./ProjectCustody";
 import { TAB_LIST, TAB_TRIGGER } from "./Tabs";
 
 type SaveState = { phase: "ready"; } | { phase: "saving"; } | { phase: "error"; message: string; };
@@ -377,6 +378,7 @@ export const ProjectSettingsModal = (properties: { project: Project; onSaved: ()
                 <Tabs.Trigger value="info" class={TAB_TRIGGER}>Info</Tabs.Trigger>
                 <Tabs.Trigger value="analyzers" class={TAB_TRIGGER}>Analyzers</Tabs.Trigger>
                 <Tabs.Trigger value="access" class={TAB_TRIGGER}>Access</Tabs.Trigger>
+                <Tabs.Trigger value="danger" class={TAB_TRIGGER}>Danger</Tabs.Trigger>
               </Tabs.List>
 
               <Tabs.Content value="info" class="min-h-0 flex-1 space-y-4 overflow-y-auto pt-4">
@@ -438,6 +440,10 @@ export const ProjectSettingsModal = (properties: { project: Project; onSaved: ()
 
               <Tabs.Content value="access" class="min-h-0 flex-1 overflow-y-auto pt-4">
                 <ProjectMembers projectId={properties.project.project_id} />
+              </Tabs.Content>
+
+              <Tabs.Content value="danger" class="min-h-0 flex-1 overflow-y-auto pt-4">
+                <ProjectCustody project={properties.project} onMoved={() => properties.onSaved()} />
               </Tabs.Content>
             </Tabs>
             <Show when={saveError()}>

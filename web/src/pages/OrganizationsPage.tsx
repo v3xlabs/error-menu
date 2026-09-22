@@ -2,16 +2,15 @@ import type { JSX } from "@solidjs/web";
 import { createEffect, createSignal, For, Show } from "solid-js";
 
 import type { Organization } from "../api/organizations";
-import { createOrganization, listOrganizations } from "../api/organizations";
+import { listOrganizations } from "../api/organizations";
 import { useAccount } from "../app/account";
+import { AddOrganizationModal } from "../components/AddOrganizationModal";
 
 type OrganizationsState
   = | { phase: "loading"; }
     | { phase: "anonymous"; }
     | { phase: "loaded"; organizations: readonly Organization[]; }
     | { phase: "error"; message: string; };
-
-const FIELD = "w-full rounded-control bg-raised px-3 py-1.5 text-sm text-slate-900 disabled:cursor-not-allowed disabled:opacity-60 dark:text-slate-100";
 
 const renderOrganizations = (state: OrganizationsState): JSX.Element => {
   switch (state.phase) {
@@ -27,7 +26,7 @@ const renderOrganizations = (state: OrganizationsState): JSX.Element => {
     case "loaded": {
       return (
         <Show when={state.organizations.length > 0} fallback={<p class="rounded-panel bg-surface px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-500">No organizations yet.</p>}>
-          <ul class="divide-y divide-hairline rounded-panel bg-surface">
+          <ul class="divide-y divide-hairline overflow-hidden rounded-panel bg-surface">
             <For each={state.organizations}>
               {organization => (
                 <li>
@@ -51,93 +50,6 @@ const renderOrganizations = (state: OrganizationsState): JSX.Element => {
       );
     }
   }
-};
-
-const CreateOrganizationForm = (properties: { onCreated: (organization: Organization) => void; }) => {
-  const [name, setName] = createSignal("");
-  const [description, setDescription] = createSignal("");
-  const [errorMessage, setErrorMessage] = createSignal<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = createSignal(false);
-
-  const handleSubmit = async (event: SubmitEvent): Promise<void> => {
-    event.preventDefault();
-
-    const organizationName = name().trim();
-
-    if (organizationName.length === 0) {
-      setErrorMessage("Enter an organization name.");
-
-      return;
-    }
-
-    const organizationDescription = description().trim();
-
-    setErrorMessage(null);
-    setIsSubmitting(true);
-
-    const result = await createOrganization(organizationDescription.length === 0
-      ? { name: organizationName }
-      : { name: organizationName, description: organizationDescription });
-
-    setIsSubmitting(false);
-
-    if (!result.ok) {
-      setErrorMessage(result.message);
-
-      return;
-    }
-
-    setName("");
-    setDescription("");
-    properties.onCreated(result.value);
-  };
-
-  return (
-    <section class="border-t border-hairline pt-6">
-      <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">New organization</h2>
-      <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">An organization owns projects and carries its own member roles.</p>
-      <form class="mt-4 space-y-3" onSubmit={event => void handleSubmit(event)}>
-        <div class="space-y-1.5">
-          <label for="new-organization-name" class="block text-sm font-medium text-slate-700 dark:text-slate-300">
-            Name
-          </label>
-          <input
-            id="new-organization-name"
-            type="text"
-            value={name()}
-            disabled={isSubmitting()}
-            onInput={event => setName(event.currentTarget.value)}
-            placeholder="Acme"
-            class={FIELD}
-          />
-        </div>
-        <div class="space-y-1.5">
-          <label for="new-organization-description" class="block text-sm font-medium text-slate-700 dark:text-slate-300">
-            Description
-          </label>
-          <input
-            id="new-organization-description"
-            type="text"
-            value={description()}
-            disabled={isSubmitting()}
-            onInput={event => setDescription(event.currentTarget.value)}
-            placeholder="What this organization owns, in a sentence."
-            class={FIELD}
-          />
-        </div>
-        <Show when={errorMessage()}>
-          {message => <p class="text-sm text-red-600 dark:text-red-400" role="alert">{message()}</p>}
-        </Show>
-        <button
-          type="submit"
-          disabled={isSubmitting()}
-          class="rounded-control bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white"
-        >
-          {isSubmitting() ? "Creating..." : "Create organization"}
-        </button>
-      </form>
-    </section>
-  );
 };
 
 export const OrganizationsPage = () => {
@@ -203,15 +115,17 @@ export const OrganizationsPage = () => {
 
   return (
     <div class="space-y-6">
-      <h1 class="text-lg font-semibold">Organizations</h1>
+      <div class="flex items-center justify-between">
+        <h1 class="text-lg font-semibold">Organizations</h1>
+        <Show when={account.user()}>
+          {user => (
+            <Show when={user().role !== "guest"}>
+              <AddOrganizationModal onCreated={prependOrganization} />
+            </Show>
+          )}
+        </Show>
+      </div>
       {renderOrganizations(state())}
-      <Show when={account.user()}>
-        {user => (
-          <Show when={user().role !== "guest"}>
-            <CreateOrganizationForm onCreated={prependOrganization} />
-          </Show>
-        )}
-      </Show>
     </div>
   );
 };

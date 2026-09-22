@@ -33,7 +33,7 @@ const renderProjects = (state: ProjectsState): JSX.Element => {
     case "loaded": {
       return (
         <Show when={state.projects.length > 0} fallback={<p class="rounded-panel bg-surface px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-500">No projects in this organization yet.</p>}>
-          <ul class="divide-y divide-hairline rounded-panel bg-surface">
+          <ul class="divide-y divide-hairline overflow-hidden rounded-panel bg-surface">
             <For each={state.projects}>
               {project => (
                 <li>
