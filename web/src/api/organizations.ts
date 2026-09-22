@@ -164,3 +164,24 @@ export const removeOrganizationMember = async (
     }
   }
 };
+
+export const deleteOrganization = async (organizationId: string): Promise<Result<undefined>> => {
+  const response = await api("/orgs/{organization_id}", "delete", {
+    path: { organization_id: organizationId },
+  });
+
+  if (response.status === 204) return { ok: true, value: undefined };
+
+  switch (response.status) {
+    case 400:
+    case 401:
+    case 403:
+    case 404:
+    case 500: {
+      return { ok: false, message: response.data.message };
+    }
+    default: {
+      return failed(response.status);
+    }
+  }
+};

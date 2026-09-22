@@ -26,6 +26,25 @@ reaches it through `project_access` or `readable_project`.
 An organization keeps at least one owner. A project does not need its own owner row, because its
 organization always has one.
 
+## Transfer and deletion
+
+A project moves between organizations, and the move is the only write that changes what
+`ProjectRole::for_user` answers for a caller whose own grants never changed. Everything
+below the project keys on `projects(id)`, so analyses, issues, jobs and grants all travel
+with it and nothing is copied. A grant on the organization it left stops resolving the
+moment the column changes; a `project_members` row was given out about the project, so it
+survives the move.
+
+`project_transfers` records each move, because the organization a project came from is
+overwritten and no other row holds it. It names both organizations rather than referencing
+them, so an emptied organization can still be deleted afterwards and the history stays
+readable.
+
+Moving a project and deleting one both need an owner grant on the organization that holds
+it, never an owner grant on the project alone. Deleting a project removes every row keyed
+to it. Deleting an organization is refused while it still owns a project, because every
+listing and every access check reads `projects.organization_id`.
+
 ## Finding
 
 One analyzer run saw a finding at one location. The location is required because the fingerprint

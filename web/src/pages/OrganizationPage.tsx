@@ -1,9 +1,9 @@
-import { useParams } from "@solidjs/router";
+import { useNavigate, useParams } from "@solidjs/router";
 import type { JSX } from "@solidjs/web";
-import { createEffect, createSignal, For, Show } from "solid-js";
+import { createEffect, createSignal, For, Match, Show, Switch } from "solid-js";
 
 import type { Organization } from "../api/organizations";
-import { describeOrganization, readOrganization } from "../api/organizations";
+import { deleteOrganization, describeOrganization, readOrganization } from "../api/organizations";
 import type { Project } from "../api/projects";
 import { listProjects } from "../api/projects";
 import { OrganizationMembers } from "../components/OrganizationMembers";
@@ -18,6 +18,7 @@ type ProjectsState
     | { phase: "loaded"; projects: readonly Project[]; }
     | { phase: "error"; message: string; };
 type SaveState = { phase: "ready"; } | { phase: "saving"; } | { phase: "error"; message: string; };
+type DeleteState = { phase: "ready"; } | { phase: "deleting"; } | { phase: "error"; message: string; };
 
 const FIELD = "w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-900 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100";
 
@@ -60,6 +61,9 @@ const OrganizationSettings = (properties: {
   const [name, setName] = createSignal("");
   const [description, setDescription] = createSignal("");
   const [saveState, setSaveState] = createSignal<SaveState>({ phase: "ready" });
+  const [deleteState, setDeleteState] = createSignal<DeleteState>({ phase: "ready" });
+  const [isArmed, setIsArmed] = createSignal(false);
+  const navigate = useNavigate();
 
   createEffect(
     () => ({
@@ -110,6 +114,27 @@ const OrganizationSettings = (properties: {
     properties.onSaved(result.value);
   };
 
+  const deleteError = (): string | null => {
+    const current = deleteState();
+
+    return current.phase === "error" ? current.message : null;
+  };
+
+  const remove = async (): Promise<void> => {
+    setDeleteState({ phase: "deleting" });
+
+    const result = await deleteOrganization(properties.organization.organization_id);
+
+    if (!result.ok) {
+      setDeleteState({ phase: "error", message: result.message });
+      setIsArmed(false);
+
+      return;
+    }
+
+    navigate("/orgs");
+  };
+
   return (
     <section class="border-t border-slate-200 pt-6 dark:border-slate-800">
       <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">Settings</h2>
@@ -154,6 +179,35 @@ const OrganizationSettings = (properties: {
         </button>
       </form>
       <OrganizationMembers organizationId={properties.organization.organization_id} />
+      <h2 class="mt-6 text-base font-semibold text-slate-900 dark:text-slate-100">Delete</h2>
+      <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+        An organization goes only once it is empty. Move or delete every project inside it first, and its grants go with it.
+      </p>
+      <Show when={deleteError()}>
+        {message => <p class="mt-4 text-sm text-red-600 dark:text-red-400" role="alert">{message()}</p>}
+      </Show>
+      <div class="mt-4 flex items-center gap-2">
+        <button
+          type="button"
+          disabled={deleteState().phase === "deleting"}
+          onClick={() => (isArmed() ? void remove() : setIsArmed(true))}
+          class="rounded-md border border-red-600 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-400 dark:text-red-400 dark:hover:bg-red-950"
+        >
+          <Switch fallback="Delete organization">
+            <Match when={deleteState().phase === "deleting"}>Deleting...</Match>
+            <Match when={isArmed()}>{`Delete ${properties.organization.name} for good`}</Match>
+          </Switch>
+        </button>
+        <Show when={isArmed() && deleteState().phase !== "deleting"}>
+          <button
+            type="button"
+            onClick={() => setIsArmed(false)}
+            class="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+          >
+            Cancel
+          </button>
+        </Show>
+      </div>
     </section>
   );
 };

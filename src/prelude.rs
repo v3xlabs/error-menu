@@ -16,6 +16,7 @@ pub use crate::project::member::{ProjectMember, ProjectRole};
 pub use crate::project::person::{Person, PersonRole, Signature};
 pub use crate::project::snapshot::Snapshot;
 pub use crate::project::subject::{Subject, SubjectKind};
+pub use crate::project::transfer::ProjectTransfer;
 pub use crate::project::{Project, ProjectIcon};
 pub use crate::user::{User, UserRole};
 pub use crate::vcs::{CommitSha, RemoteUrl, RepoPath};

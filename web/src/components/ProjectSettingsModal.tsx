@@ -18,6 +18,7 @@ import { ANALYZERS } from "../domain/analyzer";
 import { AnalyzerSelect } from "./AnalyzerSelect";
 import { IconPicker } from "./IconPicker";
 import { InfoTip } from "./InfoTip";
+import { ProjectCustody } from "./ProjectCustody";
 
 type SaveState = { phase: "ready"; } | { phase: "saving"; } | { phase: "error"; message: string; };
 type MembersState
@@ -435,6 +436,7 @@ export const ProjectSettingsModal = (properties: { project: Project; onSaved: ()
               </fieldset>
             </form>
             <ProjectMembers projectId={properties.project.project_id} />
+            <ProjectCustody project={properties.project} onMoved={() => properties.onSaved()} />
             <Show when={saveError()}>
               {message => <p class="mt-4 text-sm text-red-600 dark:text-red-400">{message()}</p>}
             </Show>

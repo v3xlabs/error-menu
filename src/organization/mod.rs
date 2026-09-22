@@ -22,6 +22,15 @@ pub struct OrganizationSummary {
     pub project_count: u64,
 }
 
+/// What a deletion did. An organization that still owns projects is left alone: every
+/// listing and every access check here reads `projects.organization_id`, so a project
+/// without an organization is a project nobody can reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrganizationDeletion {
+    Deleted,
+    HoldsProjects(u64),
+}
+
 impl Organization {
     pub async fn create(
         database: &Database,
@@ -121,6 +130,36 @@ impl Organization {
 
         Ok(())
     }
+
+    pub async fn delete(&self, database: &Database) -> Result<OrganizationDeletion, DatabaseError> {
+        let mut transaction = database.write().await?;
+        let projects: i64 =
+            sqlx::query("SELECT COUNT(*) AS count FROM projects WHERE organization_id = ?")
+                .bind(self.id.raw())
+                .fetch_one(&mut *transaction)
+                .await?
+                .try_get("count")?;
+        if projects > 0 {
+            transaction.rollback().await?;
+            let held = projects.try_into().map_err(|_| DatabaseError::Unreadable {
+                field: "project_count",
+                value: projects.to_string(),
+            })?;
+
+            return Ok(OrganizationDeletion::HoldsProjects(held));
+        }
+        sqlx::query("DELETE FROM organization_members WHERE organization_id = ?")
+            .bind(self.id.raw())
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("DELETE FROM organizations WHERE id = ?")
+            .bind(self.id.raw())
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+
+        Ok(OrganizationDeletion::Deleted)
+    }
 }
 
 impl DecodeRow for Organization {
@@ -140,12 +179,12 @@ impl DecodeRow for OrganizationSummary {
         Ok(OrganizationSummary {
             organization: Organization::decode_row(row)?,
             viewer_role: OrganizationRole::read(row, "viewer_role")?,
-            project_count: project_count.try_into().map_err(|_| {
-                DatabaseError::Unreadable {
+            project_count: project_count
+                .try_into()
+                .map_err(|_| DatabaseError::Unreadable {
                     field: "project_count",
                     value: project_count.to_string(),
-                }
-            })?,
+                })?,
         })
     }
 }

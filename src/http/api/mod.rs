@@ -119,6 +119,52 @@ pub async fn organization_access(
     }
 }
 
+/// Who may change a project's custody: move it to another organization, or delete it.
+///
+/// Both need an owner of the organization that holds the project, never an owner of the
+/// project alone. A project grant is given out one repository at a time, and anyone who
+/// may create an organization could otherwise walk a project out of the one that owns it.
+pub enum CustodyAccess {
+    Allowed {
+        project: Project,
+        organization: Organization,
+    },
+    Forbidden,
+    Missing,
+    Failed(String),
+}
+
+pub async fn custody_access(
+    state: &AppState,
+    user: &User,
+    project_id: Id<Project>,
+) -> CustodyAccess {
+    let project = match Project::load(&state.database, project_id).await {
+        Ok(Some(project)) => project,
+        Ok(None) => return CustodyAccess::Missing,
+        Err(error) => return CustodyAccess::Failed(error.to_string()),
+    };
+    match organization_access(
+        state,
+        user,
+        project.organization_id,
+        OrganizationPermission::Owner,
+    )
+    .await
+    {
+        OrganizationAccess::Allowed { organization, .. } => CustodyAccess::Allowed {
+            project,
+            organization,
+        },
+        OrganizationAccess::Forbidden => CustodyAccess::Forbidden,
+        OrganizationAccess::Missing => CustodyAccess::Failed(format!(
+            "project {} names an organization that does not exist",
+            project.id.encode()
+        )),
+        OrganizationAccess::Failed(message) => CustodyAccess::Failed(message),
+    }
+}
+
 pub fn can_create_organization(user: &User) -> bool {
     matches!(user.role, UserRole::Member | UserRole::Admin)
 }
