@@ -6,8 +6,22 @@
   color-scheme: light dark;
 }
 
+/* The slate ramp carries a blue tint that only suits the light theme, so the dark theme
+   regrounds the same steps on a neutral ramp that bottoms out at black. */
 html.dark {
   color-scheme: dark;
+
+  --color-slate-50: #fafafa;
+  --color-slate-100: #f4f4f5;
+  --color-slate-200: #e4e4e7;
+  --color-slate-300: #d4d4d8;
+  --color-slate-400: #a1a1a6;
+  --color-slate-500: #78787d;
+  --color-slate-600: #525256;
+  --color-slate-700: #3f3f45;
+  --color-slate-800: #27272a;
+  --color-slate-900: #141416;
+  --color-slate-950: #000000;
 }
 
 body {
