@@ -1,4 +1,4 @@
-import { useParams } from "@solidjs/router";
+import { useParams, useSearchParams } from "@solidjs/router";
 import type { JSX } from "@solidjs/web";
 import { FiArrowLeft, FiExternalLink } from "solid-icons/fi";
 import { createEffect, createSignal, For, Show } from "solid-js";
@@ -18,6 +18,7 @@ import {
   mergedChangeFor,
   roleLabel,
   rolesOf,
+  scanPath,
   subjectLabel,
   subjectPath,
 } from "../domain/analysis";
@@ -31,6 +32,7 @@ export const SubjectPage = () => {
   const [projectError, setProjectError] = createSignal<string | null>(null);
   const [runState, setRunState] = createSignal<RunState>({ phase: "ready" });
   const routeParameters = useParams<{ projectId: string; kind: string; key: string; }>();
+  const [searchParameters] = useSearchParams<{ head: string; }>();
 
   const analyses = (): readonly Analysis[] => {
     const current = historyState();
@@ -43,7 +45,15 @@ export const SubjectPage = () => {
         analysis => analysis.subject.kind === routeParameters.kind && analysis.subject.key === routeParameters.key,
       ),
     );
-  const current = (): Analysis | undefined => history()[0];
+  // A reading is named by the commit it read. Without one, the subject's newest reading is
+  // what a reader means.
+  const shownIndex = (): number => {
+    const head = searchParameters.head;
+
+    return head === undefined ? 0 : history().findIndex(analysis => analysis.head_sha === head);
+  };
+  const current = (): Analysis | undefined => history()[shownIndex()];
+  const earlierScans = (): readonly Analysis[] => history().slice(shownIndex() + 1);
   const mergedBy = (): Analysis | undefined => {
     const analysis = current();
 
@@ -132,21 +142,17 @@ export const SubjectPage = () => {
               {title => <span class="font-normal text-slate-600 dark:text-slate-300">{title()}</span>}
             </Show>
           </h1>
-          <p class="mt-1 text-sm text-slate-500 dark:text-slate-500">
-            {toneLabel(analysisTone(analysis))}
+          <p class="mt-1 flex flex-wrap items-center gap-2 text-sm text-slate-500 dark:text-slate-500">
+            <span>{toneLabel(analysisTone(analysis))}</span>
+            <span class="font-mono text-xs">{analysis.head_sha.slice(0, 7)}</span>
             <Show when={analysis.forge.head_ref}>
               {headReference => (
-                <>
-                  {" - "}
+                <span>
                   {headReference()}
                   <Show when={analysis.forge.base_ref}>
-                    {baseReference => (
-                      <>
-                        {` into ${baseReference()}`}
-                      </>
-                    )}
+                    {baseReference => <>{` into ${baseReference()}`}</>}
                   </Show>
-                </>
+                </span>
               )}
             </Show>
           </p>
@@ -273,18 +279,23 @@ export const SubjectPage = () => {
           </section>
         </Show>
 
-        <Show when={history().length > 1}>
+        <Show when={earlierScans().length > 0}>
           <section class="space-y-3">
             <h2 class="text-sm font-semibold tracking-wide text-slate-500 uppercase dark:text-slate-400">Earlier scans</h2>
             <ul class="space-y-2">
-              <For each={history().slice(1)}>
+              <For each={earlierScans()}>
                 {earlier => (
-                  <li class="flex items-center justify-between gap-3 rounded-panel bg-surface px-4 py-3 text-sm">
-                    <span class="flex items-center gap-2">
-                      <StatusDot tone={analysisTone(earlier)} />
-                      {toneLabel(analysisTone(earlier))}
-                    </span>
-                    <span class="font-mono text-xs text-slate-500 dark:text-slate-500">{earlier.head_sha.slice(0, 12)}</span>
+                  <li>
+                    <a
+                      href={scanPath(routeParameters.projectId, earlier)}
+                      class="flex items-center justify-between gap-3 rounded-panel bg-surface px-4 py-3 text-sm hover:bg-raised"
+                    >
+                      <span class="flex items-center gap-2">
+                        <StatusDot tone={analysisTone(earlier)} />
+                        {toneLabel(analysisTone(earlier))}
+                      </span>
+                      <span class="font-mono text-xs text-slate-500 dark:text-slate-500">{earlier.head_sha.slice(0, 12)}</span>
+                    </a>
                   </li>
                 )}
               </For>
@@ -305,7 +316,13 @@ export const SubjectPage = () => {
     const analysis = current();
 
     if (analysis === undefined) {
-      return <p class="text-sm text-slate-500 dark:text-slate-500">Nothing has been scanned for this subject yet.</p>;
+      return (
+        <p class="text-sm text-slate-500 dark:text-slate-500">
+          {searchParameters.head === undefined
+            ? "Nothing has been scanned for this subject yet."
+            : "No scan of that commit is recorded."}
+        </p>
+      );
     }
 
     return renderSubject(analysis);

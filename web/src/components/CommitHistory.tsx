@@ -2,7 +2,7 @@ import { Tooltip } from "@kobalte/core/tooltip";
 import { For, Show } from "solid-js";
 
 import type { Analysis, Commit } from "../api/projects";
-import { analysisTone, runTone, subjectPath } from "../domain/analysis";
+import { analysisTone, runTone, scanPath } from "../domain/analysis";
 import type { AnalyzerRingEntry } from "./AnalyzerRing";
 import { AnalyzerRing } from "./AnalyzerRing";
 import { StatusDot } from "./StatusDot";
@@ -54,7 +54,7 @@ const CommitRow = (properties: { commit: Commit; scan: Analysis | undefined; pro
       >
         {scan => (
           <a
-            href={subjectPath(properties.projectId, scan())}
+            href={scanPath(properties.projectId, scan())}
             class="block truncate text-sm font-medium text-slate-900 hover:underline dark:text-slate-100"
           >
             {properties.commit.summary}
