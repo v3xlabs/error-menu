@@ -8,10 +8,16 @@ RUN pnpm build
 FROM rust:1.98-bookworm AS rust-build
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
+RUN mkdir src \
+    && echo 'fn main() {}' > src/main.rs \
+    && touch src/lib.rs \
+    && cargo build --release --locked \
+    && rm -r src
 COPY migrations/ ./migrations/
 COPY src/ ./src/
 COPY --from=web-build /build/web/dist ./web/dist
-RUN cargo build --release --locked
+# The stub sources can be newer than the copied sources, and cargo compares mtimes.
+RUN touch src/main.rs src/lib.rs && cargo build --release --locked
 
 FROM debian:bookworm-slim
 RUN apt-get update \
