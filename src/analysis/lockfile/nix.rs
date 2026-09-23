@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 use super::LockedPackage;
+use crate::prelude::*;
 
 pub(super) fn parse(
     text: &str,
@@ -24,10 +25,7 @@ pub(super) fn parse(
                         .map(|at| at.to_string())
                         .unwrap_or_default()
                 }),
-                registered: matches!(
-                    locked.kind.as_str(),
-                    "github" | "gitlab" | "sourcehut" | "indirect"
-                ),
+                origin: origin_of(&locked),
                 source: Some(describe(&locked)),
                 integrity: locked.nar_hash,
             })
@@ -40,6 +38,34 @@ fn describe(locked: &Locked) -> String {
         (Some(owner), Some(repo), _) => format!("{}:{owner}/{repo}", locked.kind),
         (_, _, Some(url)) => format!("{}:{url}", locked.kind),
         _ => locked.kind.clone(),
+    }
+}
+
+/// A flake input is a repository, so its origin is the repository it names, at the
+/// revision it pins when the host is a forge that serves one. `describe` stays for the
+/// detail sentence; this is the part a link can be built from.
+fn origin_of(locked: &Locked) -> PackageOrigin {
+    let host = match locked.kind.as_str() {
+        "github" => "https://github.com",
+        "gitlab" => "https://gitlab.com",
+        "sourcehut" => "https://git.sr.ht",
+        _ => {
+            return match &locked.url {
+                Some(url) => PackageOrigin::Remote { url: url.clone() },
+                // A node with neither a host pair nor a url is a path input.
+                None => PackageOrigin::Local,
+            };
+        }
+    };
+
+    match (&locked.owner, &locked.repo, &locked.rev) {
+        (Some(owner), Some(repo), Some(rev)) => PackageOrigin::Remote {
+            url: format!("{host}/{owner}/{repo}/tree/{rev}"),
+        },
+        (Some(owner), Some(repo), None) => PackageOrigin::Remote {
+            url: format!("{host}/{owner}/{repo}"),
+        },
+        _ => PackageOrigin::Local,
     }
 }
 
@@ -109,21 +135,33 @@ mod tests {
             .iter()
             .find(|package| package.name == "nixpkgs")
             .expect("nixpkgs is an input");
-        assert!(nixpkgs.registered);
+        assert_eq!(
+            nixpkgs.origin,
+            PackageOrigin::Remote {
+                url:
+                    "https://github.com/NixOS/nixpkgs/tree/ef34387ddd751e1ab8857adf4676492d32eb24ec"
+                        .to_owned()
+            }
+        );
         assert_eq!(nixpkgs.source.as_deref(), Some("github:NixOS/nixpkgs"));
         assert_eq!(nixpkgs.integrity.as_deref(), Some("sha256-aaa"));
         assert_eq!(nixpkgs.version, "ef34387ddd751e1ab8857adf4676492d32eb24ec");
     }
 
     #[test]
-    fn a_git_input_is_not_registered() {
+    fn a_git_input_points_at_its_own_url() {
         let packages = parse(LOCKFILE).expect("parses");
         let helper = packages
             .iter()
             .find(|package| package.name == "helper")
             .expect("helper is an input");
 
-        assert!(!helper.registered);
+        assert_eq!(
+            helper.origin,
+            PackageOrigin::Remote {
+                url: "https://example.invalid/helper".to_owned()
+            }
+        );
         assert_eq!(
             helper.source.as_deref(),
             Some("git:https://example.invalid/helper")

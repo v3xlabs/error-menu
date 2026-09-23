@@ -18,6 +18,14 @@ const PACKAGE_ADDED: &str = "package-added";
 const PACKAGE_REMOVED: &str = "package-removed";
 const PACKAGE_VERSION_CHANGED: &str = "package-version-changed";
 
+/// The forges a flake input ordinarily names. `flake.lock` spells them as its own input
+/// types, and `nix.rs` turns each into the repository URL a reader can open.
+const FLAKE_HOSTS: [&str; 3] = [
+    "https://github.com/",
+    "https://gitlab.com/",
+    "https://git.sr.ht/",
+];
+
 #[derive(Debug, thiserror::Error)]
 pub enum LockfileError {
     #[error("{path} at the {revision} revision does not parse: {source}")]
@@ -84,6 +92,21 @@ impl Kind {
             Self::Nix => nix::parse(text),
         }
     }
+
+    /// Whether this is how the format ordinarily resolves a dependency. Cargo and npm
+    /// have a registry to compare against. A flake input is a repository whatever it
+    /// pins, so for Nix a known forge is as ordinary as an input gets, and only a flake
+    /// pointing somewhere else is worth reporting.
+    pub fn ordinary(self, origin: &PackageOrigin) -> bool {
+        match (self, origin) {
+            (Self::Nix, PackageOrigin::Remote { url }) => {
+                FLAKE_HOSTS.iter().any(|host| url.starts_with(host))
+            }
+            (_, origin) => {
+                matches!(origin, PackageOrigin::PublicRegistry | PackageOrigin::Local)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,9 +116,9 @@ pub struct LockedPackage {
     pub source: Option<String>,
     /// Checksum, integrity hash or narHash, whichever the format carries.
     pub integrity: Option<String>,
-    /// Whether this came from the ecosystem's ordinary registry. Each format decides for
-    /// itself what ordinary means.
-    pub registered: bool,
+    /// Where the package resolved from. Each format reads it out of whatever field it
+    /// keeps it in, so nothing downstream has to parse `source` back apart.
+    pub origin: PackageOrigin,
 }
 
 pub async fn delta_for_change(
@@ -191,7 +214,7 @@ pub fn delta(
             Some(_) => continue,
             // An unregistered arrival is reported on its own even when the same name also
             // lost a version, because where it now resolves from is the point, not the bump.
-            None if !package.registered => (
+            None if !kind.ordinary(&package.origin) => (
                 UNREGISTERED_ADDED,
                 Severity::Medium,
                 Some(VersionMovement::Added),
@@ -387,6 +410,8 @@ fn finding(
         ecosystem: kind.ecosystem(),
         name: reported.package.name.clone(),
         version: reported.package.version.clone(),
+        origin: Some(reported.package.origin.clone()),
+        integrity: reported.package.integrity.clone(),
     };
     let title = title_for(
         reported.rule,
@@ -620,6 +645,10 @@ mod tests {
                 ecosystem: Ecosystem::Cargo,
                 name: "helper".to_owned(),
                 version: "0.1.0".to_owned(),
+                origin: Some(PackageOrigin::Remote {
+                    url: "https://example.invalid/helper".to_owned()
+                }),
+                integrity: None,
             }
         );
     }

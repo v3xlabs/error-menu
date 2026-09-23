@@ -13,7 +13,11 @@ pub fn client() -> Result<reqwest::Client, reqwest::Error> {
         .dns_resolver(Arc::new(PublicResolver))
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(15))
-        .user_agent(concat!("error.menu/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!(
+            "error.menu/",
+            env!("CARGO_PKG_VERSION"),
+            " (+https://error.menu)"
+        ))
         .build()
 }
 

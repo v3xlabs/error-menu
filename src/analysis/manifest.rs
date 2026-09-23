@@ -62,11 +62,15 @@ pub fn delta(
             .get(&name)
             .or_else(|| before.get(&name))
             .expect("dependency exists");
+        // A manifest states a range, never a resolved origin, so it must not claim one and
+        // no registry link is drawn from it.
         let location = Location::Package {
             path: path.clone(),
             ecosystem,
             name: dependency.0.clone(),
             version: dependency.1.clone(),
+            origin: None,
+            integrity: None,
         };
         let rule = match movement {
             VersionMovement::Added => "dependency-added",
@@ -295,6 +299,8 @@ mod tests {
                 ecosystem: Ecosystem::Cargo,
                 name: "serde".to_owned(),
                 version: "1.0".to_owned(),
+                origin: None,
+                integrity: None,
             }
         );
     }

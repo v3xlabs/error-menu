@@ -103,6 +103,24 @@ fn path_after_authority(rest: &str) -> String {
     }
 }
 
+/// The page a browser opens for a git url as package metadata spells it. npm writes the
+/// transport into the url (`git+https://`, `git://`, `ssh://git@`) and the revision into the
+/// fragment, and a browser opens none of that. Anything else comes back as written, so a
+/// link built from it is judged as its author wrote it.
+pub fn browser_url(raw: &str) -> String {
+    let url = raw.strip_prefix("git+").unwrap_or(raw);
+    let url = url.find('#').map_or(url, |at| &url[..at]);
+    let url = url.strip_suffix(".git").unwrap_or(url);
+
+    match ["git://", "ssh://git@"]
+        .iter()
+        .find_map(|transport| url.strip_prefix(transport))
+    {
+        Some(rest) => format!("https://{rest}"),
+        None => url.to_owned(),
+    }
+}
+
 impl fmt::Display for RemoteUrl {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)

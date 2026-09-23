@@ -44,7 +44,7 @@ fn a_realistic_cargo_lockfile_parses_into_every_kind_of_entry() {
 
     let unregistered: Vec<_> = packages
         .iter()
-        .filter(|package| !package.registered)
+        .filter(|package| !Kind::Cargo.ordinary(&package.origin))
         .map(|package| package.name.as_str())
         .collect();
     assert_eq!(unregistered, ["shared-helper"]);
@@ -120,7 +120,11 @@ fn a_realistic_flake_lock_skips_the_root_and_reads_its_inputs() {
         .map(|package| package.name.as_str())
         .collect();
     assert_eq!(names, ["flake-utils", "nixpkgs", "rust-overlay", "systems"]);
-    assert!(packages.iter().all(|package| package.registered));
+    assert!(
+        packages
+            .iter()
+            .all(|package| Kind::Nix.ordinary(&package.origin))
+    );
 }
 
 #[test]
@@ -153,7 +157,7 @@ fn a_realistic_pnpm_lockfile_reads_its_explicit_document() {
     assert_eq!(
         packages
             .iter()
-            .filter(|package| !package.registered)
+            .filter(|package| !Kind::Pnpm.ordinary(&package.origin))
             .map(|package| package.name.as_str())
             .collect::<Vec<_>>(),
         ["internal-tool"]

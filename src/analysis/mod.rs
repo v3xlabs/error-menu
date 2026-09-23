@@ -366,8 +366,9 @@ async fn insert_finding(
     sqlx::query(
         "INSERT INTO findings \
          (id, run_id, issue_id, location_kind, file_path, line_start, line_end, ecosystem, \
-          package_name, package_version, severity, confidence, attribution, movement, title, detail) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          package_name, package_version, origin_kind, origin_ref, package_integrity, \
+          severity, confidence, attribution, movement, title, detail) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(id.raw())
     .bind(run_id.raw())
@@ -379,6 +380,9 @@ async fn insert_finding(
     .bind(location.ecosystem)
     .bind(location.package_name)
     .bind(location.package_version)
+    .bind(location.origin_kind)
+    .bind(location.origin_ref)
+    .bind(location.package_integrity)
     .bind(finding.severity.stored())
     .bind(f64::from(finding.confidence.value()))
     .bind(finding.attribution.stored())

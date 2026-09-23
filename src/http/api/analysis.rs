@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use poem_openapi::param::Path;
@@ -6,6 +7,7 @@ use poem_openapi::{ApiResponse, Enum, Object, OpenApi};
 
 use crate::analysis::{CompletedRun, SnapshotAnalysis, ci_checks, runner};
 use crate::app::AppState;
+use crate::database::codec::StoredAs;
 use crate::forge::ChangeState;
 use crate::http::MOUNT;
 use crate::http::api::{
@@ -13,7 +15,11 @@ use crate::http::api::{
 };
 use crate::http::auth::CurrentUser;
 use crate::prelude::*;
+use crate::registry::PackageFacts;
 use crate::worker::discovery;
+
+/// Registry facts for one project, keyed by the coordinate a finding names.
+type FactsIndex = BTreeMap<(&'static str, String, String), PackageFacts>;
 
 pub struct AnalysisApi {
     pub state: Arc<AppState>,
@@ -45,9 +51,16 @@ impl AnalysisApi {
                 return ListAnalysesResponse::Failed(Json(Error { message }));
             }
         }
+        let facts = match facts_index(&self.state.database, project_id).await {
+            Ok(facts) => facts,
+            Err(message) => return ListAnalysesResponse::Failed(Json(Error { message })),
+        };
         match SnapshotAnalysis::for_project(&self.state.database, project_id).await {
             Ok(analyses) => ListAnalysesResponse::Found(Json(AnalysesOutput {
-                analyses: analyses.into_iter().map(analysis_output).collect(),
+                analyses: analyses
+                    .into_iter()
+                    .map(|analysis| analysis_output(analysis, &facts))
+                    .collect(),
             })),
             Err(error) => ListAnalysesResponse::Failed(Json(Error {
                 message: error.to_string(),
@@ -143,13 +156,19 @@ impl AnalysisApi {
         };
         match runner::run(&self.state, project_id, base, head).await {
             Ok(analysis) => {
+                let facts = match facts_index(&self.state.database, project_id).await {
+                    Ok(facts) => facts,
+                    Err(message) => {
+                        return AnalyzeProjectResponse::Failed(Json(Error { message }));
+                    }
+                };
                 match SnapshotAnalysis::for_project(&self.state.database, project_id).await {
                     Ok(analyses) => match analyses
                         .into_iter()
                         .find(|stored| stored.snapshot.id == analysis.snapshot.id)
                     {
                         Some(stored) => {
-                            AnalyzeProjectResponse::Created(Json(analysis_output(stored)))
+                            AnalyzeProjectResponse::Created(Json(analysis_output(stored, &facts)))
                         }
                         None => AnalyzeProjectResponse::Failed(Json(Error {
                             message: "analysis was not stored".to_owned(),
@@ -219,8 +238,13 @@ impl AnalysisApi {
             }
         };
 
+        let facts = match facts_index(&self.state.database, project_id).await {
+            Ok(facts) => facts,
+            Err(message) => return AnalyzeProjectResponse::Failed(Json(Error { message })),
+        };
+
         match SnapshotAnalysis::for_project(&self.state.database, project_id).await {
-            Ok(mut analyses) => match take_analysis(&mut analyses, snapshot.id) {
+            Ok(mut analyses) => match take_analysis(&mut analyses, snapshot.id, &facts) {
                 Ok(output) => AnalyzeProjectResponse::Created(Json(output)),
                 Err(message) => AnalyzeProjectResponse::Failed(Json(Error { message })),
             },
@@ -278,6 +302,46 @@ struct PackageOutput {
     ecosystem: EcosystemOutput,
     name: String,
     version: String,
+    links: PackageLinksOutput,
+    facts: Option<PackageFactsOutput>,
+}
+
+/// Built on read and never stored. A URL is derived from the coordinate and the origin, so
+/// a stored copy would be a second answer that ages.
+#[derive(Debug, Object)]
+#[oai(skip_serializing_if_is_none)]
+struct PackageLinksOutput {
+    registry: Option<LinkOutput>,
+    docs: Option<LinkOutput>,
+    source: Option<LinkOutput>,
+}
+
+/// A link as its author wrote it. A `suspicious` link is shown and never followed, because
+/// what hides in a link is the thing a reviewer needs to see.
+#[derive(Debug, PartialEq, Eq, Object)]
+struct LinkOutput {
+    url: String,
+    status: LinkStatusOutput,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
+#[oai(rename_all = "snake_case")]
+enum LinkStatusOutput {
+    Safe,
+    Suspicious,
+}
+
+#[derive(Debug, Object)]
+#[oai(skip_serializing_if_is_none)]
+struct PackageFactsOutput {
+    size_bytes: Option<u64>,
+    install_bytes: Option<u64>,
+    dependency_count: Option<u32>,
+    downloads_week: Option<u64>,
+    vulnerabilities: Option<u32>,
+    vulnerabilities_high: Option<u32>,
+    license: Option<String>,
+    withdrawn: Option<String>,
 }
 
 #[derive(Debug, Object)]
@@ -500,11 +564,15 @@ async fn discovery_output(
     let mut analyses = SnapshotAnalysis::for_project(database, project_id)
         .await
         .map_err(|error| error.to_string())?;
-    let default_branch =
-        take_analysis(&mut analyses, discovery.default_branch.analysis.snapshot.id)?;
+    let facts = facts_index(database, project_id).await?;
+    let default_branch = take_analysis(
+        &mut analyses,
+        discovery.default_branch.analysis.snapshot.id,
+        &facts,
+    )?;
     let mut pull_requests = Vec::with_capacity(discovery.changes.len());
     for change in discovery.changes {
-        pull_requests.push(take_analysis(&mut analyses, change.snapshot.id)?);
+        pull_requests.push(take_analysis(&mut analyses, change.snapshot.id, &facts)?);
     }
 
     Ok(DiscoveryOutput {
@@ -513,9 +581,18 @@ async fn discovery_output(
     })
 }
 
+/// Every fact this project's findings can be joined to, read once so a response that lists
+/// hundreds of findings makes one query and not hundreds.
+async fn facts_index(database: &Database, project_id: Id<Project>) -> Result<FactsIndex, String> {
+    PackageFacts::for_project(database, project_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 fn take_analysis(
     analyses: &mut Vec<SnapshotAnalysis>,
     snapshot_id: Id<Snapshot>,
+    facts: &FactsIndex,
 ) -> Result<AnalysisOutput, String> {
     let Some(index) = analyses
         .iter()
@@ -524,10 +601,10 @@ fn take_analysis(
         return Err("discovery analysis was not stored".to_owned());
     };
 
-    Ok(analysis_output(analyses.remove(index)))
+    Ok(analysis_output(analyses.remove(index), facts))
 }
 
-fn analysis_output(analysis: SnapshotAnalysis) -> AnalysisOutput {
+fn analysis_output(analysis: SnapshotAnalysis, facts: &FactsIndex) -> AnalysisOutput {
     let status = analysis_status(&analysis.runs);
     let analyzers = analysis
         .runs
@@ -536,7 +613,7 @@ fn analysis_output(analysis: SnapshotAnalysis) -> AnalysisOutput {
             let findings = stored_run
                 .findings
                 .into_iter()
-                .map(finding_output)
+                .map(|finding| finding_output(finding, facts))
                 .collect::<Vec<_>>();
             let signals = stored_run
                 .signals
@@ -686,7 +763,7 @@ fn run_status_output(status: RunStatus) -> (String, Option<String>) {
     }
 }
 
-fn finding_output(finding: Finding) -> FindingOutput {
+fn finding_output(finding: Finding, facts: &FactsIndex) -> FindingOutput {
     let (path, line_start, line_end, package) = match finding.location {
         Location::File { path, span } => (
             path.to_string(),
@@ -699,16 +776,28 @@ fn finding_output(finding: Finding) -> FindingOutput {
             ecosystem,
             name,
             version,
-        } => (
-            path.to_string(),
-            None,
-            None,
-            Some(PackageOutput {
-                ecosystem: ecosystem_output(ecosystem),
-                name,
-                version,
-            }),
-        ),
+            origin,
+            integrity: _,
+        } => {
+            // The cache is keyed by coordinate, and a git pin or a workspace member can share
+            // a coordinate with a published package it is not.
+            let known = matches!(origin, Some(PackageOrigin::PublicRegistry))
+                .then(|| facts.get(&(ecosystem.stored(), name.clone(), version.clone())))
+                .flatten();
+
+            (
+                path.to_string(),
+                None,
+                None,
+                Some(PackageOutput {
+                    ecosystem: ecosystem_output(ecosystem),
+                    links: links_of(ecosystem, &name, &version, origin.as_ref(), known),
+                    facts: known.map(facts_output),
+                    name,
+                    version,
+                }),
+            )
+        }
     };
 
     FindingOutput {
@@ -720,6 +809,75 @@ fn finding_output(finding: Finding) -> FindingOutput {
         detail: finding.detail,
         package,
         movement: finding.movement.map(movement_output),
+    }
+}
+
+fn links_of(
+    ecosystem: Ecosystem,
+    name: &str,
+    version: &str,
+    origin: Option<&PackageOrigin>,
+    facts: Option<&PackageFacts>,
+) -> PackageLinksOutput {
+    // A registry page is only the right page when the package came from that registry. A
+    // git pin carries the same name as a published crate and describes something else.
+    let public = matches!(origin, Some(PackageOrigin::PublicRegistry));
+
+    PackageLinksOutput {
+        registry: match (ecosystem, public) {
+            (Ecosystem::Cargo, true) => Some(format!("https://crates.io/crates/{name}/{version}")),
+            (Ecosystem::Npm, true) => Some(format!("https://npmx.dev/package/{name}/v/{version}")),
+            _ => None,
+        }
+        .map(checked_link),
+        docs: facts
+            .and_then(|facts| facts.documentation.clone())
+            .map(checked_link),
+        source: match origin {
+            Some(PackageOrigin::Remote { url }) => Some(url.clone()),
+            _ => facts.and_then(|facts| facts.repository.clone()),
+        }
+        .map(checked_link),
+    }
+}
+
+/// A lockfile, a registry and a package name all carry whatever their author wrote, and a
+/// browser runs a `javascript:` href. A link is safe only when sanitising it changes
+/// nothing: another scheme, credentials, a control character, a dot segment or an
+/// unencoded character each make the sanitised form differ, and each is how a link hides
+/// where it goes.
+fn checked_link(url: String) -> LinkOutput {
+    let status = match sanitised(&url) {
+        // A bare origin gains its root slash, which moves nothing.
+        Some(clean) if clean == url || clean.strip_suffix('/') == Some(url.as_str()) => {
+            LinkStatusOutput::Safe
+        }
+        _ => LinkStatusOutput::Suspicious,
+    };
+
+    LinkOutput { url, status }
+}
+
+fn sanitised(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let plain = parsed.scheme() == "https"
+        && parsed.host().is_some()
+        && parsed.username().is_empty()
+        && parsed.password().is_none();
+
+    plain.then(|| parsed.into())
+}
+
+fn facts_output(facts: &PackageFacts) -> PackageFactsOutput {
+    PackageFactsOutput {
+        size_bytes: facts.size_bytes,
+        install_bytes: facts.install_bytes,
+        dependency_count: facts.dependency_count,
+        downloads_week: facts.downloads_week,
+        vulnerabilities: facts.vulnerabilities,
+        vulnerabilities_high: facts.vulnerabilities_high,
+        license: facts.license.clone(),
+        withdrawn: facts.withdrawn.clone(),
     }
 }
 
@@ -806,5 +964,48 @@ fn signal_key_output(key: SignalKey) -> &'static str {
         SignalKey::TestsFailing => "tests_failing",
         SignalKey::LinksAdded => "links_added",
         SignalKey::RepositoryHygiene => "repository_hygiene",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(url: &str) -> LinkStatusOutput {
+        checked_link(url.to_owned()).status
+    }
+
+    #[test]
+    fn a_plain_https_link_is_safe() {
+        assert_eq!(
+            status("https://docs.rs/serde/1.0.200"),
+            LinkStatusOutput::Safe
+        );
+        assert_eq!(status("https://serde.rs"), LinkStatusOutput::Safe);
+        assert_eq!(
+            status("https://npmx.dev/package/@scope/name/v/1.0.0"),
+            LinkStatusOutput::Safe
+        );
+    }
+
+    #[test]
+    fn a_link_the_sanitiser_rewrites_is_suspicious_and_kept_as_written() {
+        for url in [
+            "javascript:alert(1)",
+            "JavaScript:alert(1)",
+            "java\tscript:alert(1)",
+            " javascript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "http://example.com/",
+            "https://github.com@evil.example/",
+            "https://evil.example\n/",
+            "https://crates.io/crates/../../evil/1.0.0",
+            "https://example.com/a b",
+            "not a url",
+        ] {
+            let link = checked_link(url.to_owned());
+            assert_eq!(link.status, LinkStatusOutput::Suspicious, "{url:?}");
+            assert_eq!(link.url, url);
+        }
     }
 }

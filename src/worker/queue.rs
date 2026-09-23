@@ -8,6 +8,7 @@ use sqlx::sqlite::SqliteRow;
 use crate::app::AppState;
 use crate::database::codec::{DecodeRow, FromStored, StoredAs};
 use crate::prelude::*;
+use crate::registry;
 use crate::user::token::ApiToken;
 use crate::user::{attempt, session};
 use crate::worker::discovery;
@@ -33,6 +34,7 @@ const AUTH_CLEANUP: Duration = Duration::from_secs(3600);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobKind {
     Discover,
+    PackageFacts,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,6 +243,7 @@ impl StoredAs for JobKind {
     fn stored(&self) -> &'static str {
         match self {
             JobKind::Discover => "discover",
+            JobKind::PackageFacts => "package-facts",
         }
     }
 }
@@ -251,6 +254,7 @@ impl FromStored for JobKind {
     fn parse_stored(value: &str) -> Option<Self> {
         match value {
             "discover" => Some(JobKind::Discover),
+            "package-facts" => Some(JobKind::PackageFacts),
             _ => None,
         }
     }
@@ -383,6 +387,46 @@ async fn run(state: &AppState, job: Job) -> Result<(), DatabaseError> {
                     );
                 }
             },
+        },
+        JobKind::PackageFacts => match registry::fill(state, job.project_id).await {
+            Ok(registry::Fill::Failed { reads, retry_at }) => {
+                // A registry that is down or refusing is a failed attempt, and the snapshot
+                // it leaves unaudited waits on the retry, so the retry must happen.
+                let message = format!("{reads} registry reads failed");
+                let retry_at = (job.attempts < MAX_ATTEMPTS).then_some(retry_at);
+
+                job.fail(&state.database, &message, retry_at).await?;
+                tracing::warn!(
+                    attempts = job.attempts,
+                    retrying = retry_at.is_some(),
+                    "package facts incomplete: {message}"
+                );
+            }
+            Ok(filled) => {
+                job.finish(&state.database).await?;
+                tracing::info!(
+                    seconds = started.duration_until(Timestamp::now()).as_secs(),
+                    "package facts filled"
+                );
+
+                // One job reads a bounded number of coordinates, and an analysis finishing
+                // while this job ran could not queue another, so what is left asks for one.
+                if matches!(filled, registry::Fill::Unfinished) {
+                    Job::enqueue(&state.database, job.project_id, JobKind::PackageFacts).await?;
+                }
+            }
+            Err(error) => {
+                let message = error.to_string();
+                let retry_at = (job.attempts < MAX_ATTEMPTS)
+                    .then(|| Timestamp::now() + Duration::from_secs(backoff_seconds(job.attempts)));
+
+                job.fail(&state.database, &message, retry_at).await?;
+                tracing::warn!(
+                    attempts = job.attempts,
+                    retrying = retry_at.is_some(),
+                    "package facts failed: {message}"
+                );
+            }
         },
     }
 

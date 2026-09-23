@@ -296,6 +296,7 @@ fn job_output(job: Job) -> JobOutput {
         project_id: job.project_id.encode(),
         kind: match job.kind {
             JobKind::Discover => "discover".to_owned(),
+            JobKind::PackageFacts => "package-facts".to_owned(),
         },
         state: match job.state {
             JobState::Queued => "queued".to_owned(),

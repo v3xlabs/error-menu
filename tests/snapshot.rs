@@ -1,10 +1,8 @@
-use error_menu::database::Database;
+use error_menu::analysis::NewRun;
+use error_menu::analysis::finding::fingerprint::{Components, Fingerprint};
 use error_menu::forge::{ChangeState, ForgeMetadata};
-use error_menu::id::Id;
-use error_menu::project::Project;
-use error_menu::project::snapshot::Snapshot;
-use error_menu::project::subject::{Subject, SubjectKind};
-use error_menu::vcs::CommitSha;
+use error_menu::prelude::*;
+use error_menu::registry::AUDIT;
 
 const HEAD: &str = "8de08b979d673013e8a08a539e653d05a4087472";
 const BASE: &str = "560b6c2530fe1e9d0c29a3bfc23ffcfe1b788bd5";
@@ -80,6 +78,73 @@ impl Fixture {
         .await
         .expect("a run");
     }
+
+    async fn lock(&self, snapshot: &Snapshot, packages: &[(&str, PackageOrigin)]) {
+        let findings: Vec<NewFinding> = packages
+            .iter()
+            .map(|(name, origin)| {
+                let location = Location::Package {
+                    path: RepoPath::new("Cargo.lock").expect("valid path"),
+                    ecosystem: Ecosystem::Cargo,
+                    name: (*name).to_owned(),
+                    version: "1.0.0".to_owned(),
+                    origin: Some(origin.clone()),
+                    integrity: Some("claimed".to_owned()),
+                };
+                let title = format!("{name} 1.0.0 was added to the lockfile");
+
+                NewFinding {
+                    movement: Some(VersionMovement::Added),
+                    fingerprint: Fingerprint::compute(&Components {
+                        analyzer: "lockfile-delta",
+                        rule: "package-added",
+                        location: &location,
+                        title: &title,
+                        occurrence: 0,
+                    }),
+                    location,
+                    severity: Severity::Info,
+                    confidence: Confidence::new(1.0).expect("in range"),
+                    attribution: Attribution::Introduced,
+                    title,
+                    detail: String::new(),
+                }
+            })
+            .collect();
+
+        Run::record(
+            &self.database,
+            NewRun {
+                snapshot_id: snapshot.id,
+                analyzer: "lockfile-delta",
+                status: RunStatus::Succeeded,
+                compared_against: None,
+                findings: &findings,
+                signals: &[],
+            },
+        )
+        .await
+        .expect("a lockfile run");
+    }
+
+    async fn answer(&self, name: &str, status: &str) {
+        sqlx::query(
+            "INSERT OR REPLACE INTO package_facts \
+             (ecosystem, name, version, status, fetched_at, expires_at, checksum) \
+             VALUES ('cargo', ?, '1.0.0', ?, '2026-09-22T00:00:00Z', '2026-09-22T00:15:00Z', 'published')",
+        )
+        .bind(name)
+        .bind(status)
+        .execute(&self.database.pool)
+        .await
+        .expect("a facts row");
+    }
+
+    async fn awaiting_audit(&self) -> Vec<Id<Snapshot>> {
+        Snapshot::awaiting_audit(&self.database, self.subject.project_id, AUDIT)
+            .await
+            .expect("reads")
+    }
 }
 
 fn sha(value: &str) -> CommitSha {
@@ -135,4 +200,59 @@ async fn re_scanning_an_analysed_head_is_a_new_reading() {
         "a re-scan took over the reading that holds the earlier runs"
     );
     assert_eq!(fixture.readings().await, 2);
+}
+
+#[tokio::test]
+async fn a_snapshot_waits_for_every_registry_answer_before_its_audit() {
+    let fixture = Fixture::build().await;
+    let snapshot = fixture.analyse().await;
+    fixture
+        .lock(
+            &snapshot,
+            &[
+                ("serde", PackageOrigin::PublicRegistry),
+                ("anyhow", PackageOrigin::PublicRegistry),
+            ],
+        )
+        .await;
+
+    fixture.answer("serde", "known").await;
+    assert!(
+        fixture.awaiting_audit().await.is_empty(),
+        "audited while anyhow had no answer"
+    );
+
+    fixture.answer("anyhow", "failed").await;
+    assert!(
+        fixture.awaiting_audit().await.is_empty(),
+        "audited while the anyhow read had failed"
+    );
+
+    fixture.answer("anyhow", "absent").await;
+    assert_eq!(fixture.awaiting_audit().await, [snapshot.id]);
+}
+
+#[tokio::test]
+async fn a_package_from_outside_the_public_registry_is_not_audited() {
+    let fixture = Fixture::build().await;
+    let snapshot = fixture.analyse().await;
+    fixture
+        .lock(
+            &snapshot,
+            &[
+                (
+                    "inner",
+                    PackageOrigin::Registry {
+                        url: "https://packages.example.invalid/index".to_owned(),
+                    },
+                ),
+                ("utils", PackageOrigin::Local),
+            ],
+        )
+        .await;
+
+    assert!(
+        fixture.awaiting_audit().await.is_empty(),
+        "a snapshot with no public-registry package waits for an audit"
+    );
 }

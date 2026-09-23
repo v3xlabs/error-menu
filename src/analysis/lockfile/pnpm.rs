@@ -2,6 +2,7 @@ use serde::Deserialize;
 use serde_yaml::Value;
 
 use super::LockedPackage;
+use crate::prelude::*;
 
 /// pnpm frames its lockfile as an explicit YAML document: pnpm 12 writes `---` before the
 /// first key and again after the last one, which a whole-stream read rejects as two
@@ -33,7 +34,14 @@ pub fn parse(text: &str) -> Result<Vec<LockedPackage>, serde_yaml::Error> {
             Some(LockedPackage {
                 name: name.to_owned(),
                 version: version.to_owned(),
-                registered: source.is_none(),
+                // pnpm writes a tarball or a repo only when the package came from
+                // somewhere other than the registry it was configured with.
+                origin: match &source {
+                    Some(source) => PackageOrigin::Remote {
+                        url: source.clone(),
+                    },
+                    None => PackageOrigin::PublicRegistry,
+                },
                 source,
                 integrity,
             })
@@ -61,7 +69,7 @@ mod tests {
         assert_eq!(packages.len(), 1);
         assert_eq!(packages[0].name, "@solidjs/router");
         assert_eq!(packages[0].version, "0.15.0");
-        assert!(packages[0].registered);
+        assert_eq!(packages[0].origin, PackageOrigin::PublicRegistry);
     }
 
     #[test]
@@ -71,7 +79,12 @@ mod tests {
         )
         .expect("parses");
 
-        assert!(!packages[0].registered);
+        assert_eq!(
+            packages[0].origin,
+            PackageOrigin::Remote {
+                url: "https://example.invalid/example.tgz".to_owned()
+            }
+        );
         assert_eq!(
             packages[0].source.as_deref(),
             Some("https://example.invalid/example.tgz")
