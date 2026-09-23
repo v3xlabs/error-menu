@@ -3,6 +3,7 @@ import { FiAlertTriangle, FiFileText } from "solid-icons/fi";
 import { Show } from "solid-js";
 
 import type { Analysis } from "../api/projects";
+import { CheckedLink } from "./CheckedLink";
 import { MOVEMENT_ICONS, MOVEMENT_TEXT, SEVERITY_TEXT } from "./Counts";
 import { PackageTail } from "./PackageTail";
 
@@ -45,14 +46,13 @@ const detail = (finding: Finding): JSX.Element => {
   return (
     <>
       {finding.detail.slice(0, at)}
-      <a
-        href={registry}
-        target="_blank"
-        rel="noreferrer"
+      <CheckedLink
+        link={registry}
+        label={`${item.name} on its registry`}
         class="underline decoration-slate-300 underline-offset-2 dark:decoration-slate-600"
       >
         {item.name}
-      </a>
+      </CheckedLink>
       {finding.detail.slice(at + item.name.length)}
     </>
   );

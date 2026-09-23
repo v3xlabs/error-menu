@@ -68,7 +68,7 @@ fn origin_of(resolved: Option<&str>) -> PackageOrigin {
         .any(|prefix| resolved.starts_with(prefix))
     {
         return PackageOrigin::Remote {
-            url: resolved.to_owned(),
+            url: crate::vcs::browser_url(resolved),
         };
     }
 

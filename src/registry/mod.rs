@@ -8,6 +8,7 @@ mod cargo;
 mod npm;
 
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 use jiff::{SignedDuration, Timestamp};
 use sqlx::Row;
@@ -19,6 +20,7 @@ use crate::app::AppState;
 use crate::database::codec::{DecodeRow, FromStored, StoredAs};
 use crate::outbound;
 use crate::prelude::*;
+use crate::worker::queue::LEASE;
 
 /// The run identifier the checksum audit records under. It is not a selectable analyzer:
 /// nothing schedules it except the facts job, so it is absent from `DEFAULT_ANALYZERS` and
@@ -33,10 +35,14 @@ const KNOWN_TTL: SignedDuration = SignedDuration::from_hours(24);
 const ABSENT_TTL: SignedDuration = SignedDuration::from_hours(6);
 const FAILED_TTL: SignedDuration = SignedDuration::from_mins(15);
 
-/// How many coordinates one job reads. A first scan of a large repository can reference
-/// thousands, and a job that tried them all would outlive its lease. Hitting the cap
-/// queues the job again rather than leaving the rest unread.
+/// How many coordinates one job reads, and how long it may spend reading them. A first
+/// scan of a large repository can reference thousands, and a job that tried them all would
+/// outlive its lease. Either limit queues the job again rather than leaving the rest unread.
 const PER_JOB: usize = 200;
+
+/// Half the lease, because the check runs between coordinates and one coordinate can spend
+/// several request timeouts past it.
+const BUDGET: Duration = Duration::from_secs(LEASE.as_secs() / 2);
 
 /// The response body cap. Every endpoint this module reads answers in kilobytes; a
 /// megabyte means the URL is not what we think it is.
@@ -101,15 +107,32 @@ pub(crate) enum ReadError {
     Unavailable(String),
 }
 
+/// What one job left behind, so the queue knows whether to ask again and when.
+#[derive(Debug)]
+pub enum Fill {
+    Complete,
+    /// Coordinates are left that this job had no room or time for.
+    Unfinished,
+    /// A failed read is cached until `retry_at`, so asking again before then reads nothing.
+    Failed {
+        reads: usize,
+        retry_at: Timestamp,
+    },
+}
+
 /// Fills every coordinate this project's findings reference that the cache does not hold or
 /// holds stale. The cache is global, so a coordinate another project already paid for is
 /// skipped here without a request.
-pub async fn fill(state: &AppState, project_id: Id<Project>) -> Result<bool, RegistryError> {
+pub async fn fill(state: &AppState, project_id: Id<Project>) -> Result<Fill, RegistryError> {
     let client = outbound::client()?;
-    let coordinates = PackageFacts::stale_for_project(&state.database, project_id).await?;
-    let full = coordinates.len() >= PER_JOB;
+    let started = Instant::now();
+    let mut failed = None;
 
-    for coordinate in coordinates {
+    for coordinate in PackageFacts::stale_for_project(&state.database, project_id, PER_JOB).await? {
+        if started.elapsed() >= BUDGET {
+            break;
+        }
+
         let read = match coordinate.ecosystem {
             Ecosystem::Cargo => cargo::read(&client, &coordinate.name, &coordinate.version).await,
             Ecosystem::Npm => npm::read(&client, &coordinate.name, &coordinate.version).await,
@@ -127,12 +150,30 @@ pub async fn fill(state: &AppState, project_id: Id<Project>) -> Result<bool, Reg
             );
         }
 
-        PackageFacts::upsert(&state.database, &resolve(coordinate, read)).await?;
+        let facts = resolve(coordinate, read);
+        if facts.status == FactsStatus::Failed {
+            let reads = failed.map_or(0, |(reads, _)| reads);
+            failed = Some((reads + 1, facts.expires_at));
+        }
+
+        PackageFacts::upsert(&state.database, &facts).await?;
     }
 
     audit_checksums(state, project_id).await?;
 
-    Ok(full)
+    if let Some((reads, retry_at)) = failed {
+        return Ok(Fill::Failed { reads, retry_at });
+    }
+
+    let unfinished = !PackageFacts::stale_for_project(&state.database, project_id, 1)
+        .await?
+        .is_empty();
+
+    Ok(if unfinished {
+        Fill::Unfinished
+    } else {
+        Fill::Complete
+    })
 }
 
 /// Compares what each lockfile claimed against what the publisher published. A coordinate
@@ -250,12 +291,14 @@ impl PackageFacts {
         )
     }
 
-    /// The coordinates this project's findings name that the cache cannot answer. A
-    /// manifest finding carries a constraint rather than a resolved version, which is why
-    /// only findings with an origin are asked about.
+    /// The coordinates this project's findings name that the cache cannot answer. Only a
+    /// package the lockfile resolved from the public registry is asked about: a workspace
+    /// member, a git pin or a private registry package can share a public name and version
+    /// and still be different bytes.
     async fn stale_for_project(
         database: &Database,
         project_id: Id<Project>,
+        limit: usize,
     ) -> Result<Vec<Coordinate>, DatabaseError> {
         let rows = sqlx::query(
             "SELECT DISTINCT f.ecosystem, f.package_name, f.package_version \
@@ -266,13 +309,13 @@ impl PackageFacts {
              LEFT JOIN package_facts p ON p.ecosystem = f.ecosystem \
                   AND p.name = f.package_name AND p.version = f.package_version \
              WHERE sub.project_id = ? AND f.location_kind = 'package' \
-               AND f.origin_kind IS NOT NULL AND f.ecosystem <> 'nix' \
+               AND f.origin_kind = 'public_registry' AND f.ecosystem <> 'nix' \
                AND (p.ecosystem IS NULL OR p.expires_at <= ?) \
              ORDER BY f.package_name LIMIT ?",
         )
         .bind(project_id.raw())
         .bind(Timestamp::now().to_string())
-        .bind(PER_JOB as i64)
+        .bind(limit as i64)
         .fetch_all(&database.pool)
         .await?;
 
@@ -300,7 +343,8 @@ impl PackageFacts {
              JOIN runs r ON r.id = f.run_id \
              JOIN snapshots s ON s.id = r.snapshot_id \
              JOIN subjects sub ON sub.id = s.subject_id \
-             WHERE sub.project_id = ? AND p.status = 'known'",
+             WHERE sub.project_id = ? AND p.status = 'known' \
+               AND f.origin_kind = 'public_registry'",
         )
         .bind(project_id.raw())
         .fetch_all(&database.pool)
@@ -334,6 +378,7 @@ impl PackageFacts {
              JOIN package_facts p ON p.ecosystem = f.ecosystem AND p.name = f.package_name \
                   AND p.version = f.package_version \
              WHERE r.snapshot_id = ? AND p.checksum IS NOT NULL \
+               AND f.origin_kind = 'public_registry' \
                AND f.package_integrity IS NOT NULL AND f.package_integrity <> p.checksum",
         )
         .bind(snapshot_id.raw())
@@ -458,7 +503,7 @@ pub(crate) async fn get<T: serde::de::DeserializeOwned>(
         .map_err(|error| ReadError::Unavailable(format!("{url} is not a url: {error}")))?;
     outbound::validate_url(&parsed).map_err(|error| ReadError::Unavailable(error.to_string()))?;
 
-    let response = client
+    let mut response = client
         .get(parsed)
         .send()
         .await
@@ -475,16 +520,18 @@ pub(crate) async fn get<T: serde::de::DeserializeOwned>(
         )));
     }
 
-    let body = response
-        .bytes()
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|error| ReadError::Unavailable(error.to_string()))?;
-
-    if body.len() > MAX_RESPONSE_BYTES {
-        return Err(ReadError::Unavailable(format!(
-            "{url} answered {} bytes",
-            body.len()
-        )));
+        .map_err(|error| ReadError::Unavailable(error.to_string()))?
+    {
+        if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            return Err(ReadError::Unavailable(format!(
+                "{url} answered more than {MAX_RESPONSE_BYTES} bytes"
+            )));
+        }
+        body.extend_from_slice(&chunk);
     }
 
     serde_json::from_slice(&body).map_err(|error| ReadError::Unavailable(error.to_string()))

@@ -4,7 +4,7 @@ use super::LockedPackage;
 use crate::prelude::*;
 
 const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
-const REGISTRY_PREFIX: &str = "registry+";
+const REGISTRY_PREFIXES: [&str; 2] = ["registry+", "sparse+"];
 const GIT_PREFIX: &str = "git+";
 
 pub(super) fn parse(
@@ -45,7 +45,10 @@ fn origin_of(source: Option<&str>) -> PackageOrigin {
         };
     }
 
-    match source.strip_prefix(REGISTRY_PREFIX) {
+    match REGISTRY_PREFIXES
+        .iter()
+        .find_map(|prefix| source.strip_prefix(prefix))
+    {
         Some(url) => PackageOrigin::Registry {
             url: url.to_owned(),
         },
@@ -97,10 +100,15 @@ version = \"0.1.0\"
 name = \"inner\"
 version = \"2.0.0\"
 source = \"registry+https://packages.example.invalid/index\"
+
+[[package]]
+name = \"sparse-inner\"
+version = \"1.0.0\"
+source = \"sparse+https://sparse.example.invalid/index/\"
 ";
         let packages = parse(text).expect("parses");
 
-        assert_eq!(packages.len(), 4);
+        assert_eq!(packages.len(), 5);
         assert_eq!(packages[0].origin, PackageOrigin::PublicRegistry);
         assert_eq!(packages[0].integrity.as_deref(), Some("aaa"));
         assert_eq!(
@@ -115,6 +123,12 @@ source = \"registry+https://packages.example.invalid/index\"
             packages[3].origin,
             PackageOrigin::Registry {
                 url: "https://packages.example.invalid/index".to_owned()
+            }
+        );
+        assert_eq!(
+            packages[4].origin,
+            PackageOrigin::Registry {
+                url: "https://sparse.example.invalid/index/".to_owned()
             }
         );
     }

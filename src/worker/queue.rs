@@ -389,16 +389,29 @@ async fn run(state: &AppState, job: Job) -> Result<(), DatabaseError> {
             },
         },
         JobKind::PackageFacts => match registry::fill(state, job.project_id).await {
-            Ok(more) => {
+            Ok(registry::Fill::Failed { reads, retry_at }) => {
+                // A registry that is down or refusing is a failed attempt, and the snapshot
+                // it leaves unaudited waits on the retry, so the retry must happen.
+                let message = format!("{reads} registry reads failed");
+                let retry_at = (job.attempts < MAX_ATTEMPTS).then_some(retry_at);
+
+                job.fail(&state.database, &message, retry_at).await?;
+                tracing::warn!(
+                    attempts = job.attempts,
+                    retrying = retry_at.is_some(),
+                    "package facts incomplete: {message}"
+                );
+            }
+            Ok(filled) => {
                 job.finish(&state.database).await?;
                 tracing::info!(
                     seconds = started.duration_until(Timestamp::now()).as_secs(),
                     "package facts filled"
                 );
 
-                // One job reads a bounded number of coordinates, so a project that had more
-                // than that asks for the rest rather than leaving them unread.
-                if more {
+                // One job reads a bounded number of coordinates, and an analysis finishing
+                // while this job ran could not queue another, so what is left asks for one.
+                if matches!(filled, registry::Fill::Unfinished) {
                     Job::enqueue(&state.database, job.project_id, JobKind::PackageFacts).await?;
                 }
             }

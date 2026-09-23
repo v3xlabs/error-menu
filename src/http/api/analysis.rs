@@ -311,9 +311,24 @@ struct PackageOutput {
 #[derive(Debug, Object)]
 #[oai(skip_serializing_if_is_none)]
 struct PackageLinksOutput {
-    registry: Option<String>,
-    docs: Option<String>,
-    source: Option<String>,
+    registry: Option<LinkOutput>,
+    docs: Option<LinkOutput>,
+    source: Option<LinkOutput>,
+}
+
+/// A link as its author wrote it. A `suspicious` link is shown and never followed, because
+/// what hides in a link is the thing a reviewer needs to see.
+#[derive(Debug, PartialEq, Eq, Object)]
+struct LinkOutput {
+    url: String,
+    status: LinkStatusOutput,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
+#[oai(rename_all = "snake_case")]
+enum LinkStatusOutput {
+    Safe,
+    Suspicious,
 }
 
 #[derive(Debug, Object)]
@@ -764,7 +779,11 @@ fn finding_output(finding: Finding, facts: &FactsIndex) -> FindingOutput {
             origin,
             integrity: _,
         } => {
-            let known = facts.get(&(ecosystem.stored(), name.clone(), version.clone()));
+            // The cache is keyed by coordinate, and a git pin or a workspace member can share
+            // a coordinate with a published package it is not.
+            let known = matches!(origin, Some(PackageOrigin::PublicRegistry))
+                .then(|| facts.get(&(ecosystem.stored(), name.clone(), version.clone())))
+                .flatten();
 
             (
                 path.to_string(),
@@ -809,27 +828,44 @@ fn links_of(
             (Ecosystem::Cargo, true) => Some(format!("https://crates.io/crates/{name}/{version}")),
             (Ecosystem::Npm, true) => Some(format!("https://npmx.dev/package/{name}/v/{version}")),
             _ => None,
-        },
-        docs: facts.and_then(|facts| facts.documentation.clone()),
-        source: source_link(ecosystem, version, origin, facts),
+        }
+        .map(checked_link),
+        docs: facts
+            .and_then(|facts| facts.documentation.clone())
+            .map(checked_link),
+        source: match origin {
+            Some(PackageOrigin::Remote { url }) => Some(url.clone()),
+            _ => facts.and_then(|facts| facts.repository.clone()),
+        }
+        .map(checked_link),
     }
 }
 
-/// A flake input pins a revision, and the revision is its version, so the link goes to the
-/// tree the lockfile actually names.
-fn source_link(
-    ecosystem: Ecosystem,
-    version: &str,
-    origin: Option<&PackageOrigin>,
-    facts: Option<&PackageFacts>,
-) -> Option<String> {
-    match origin {
-        Some(PackageOrigin::Remote { url }) if ecosystem == Ecosystem::Nix => {
-            Some(format!("{url}/tree/{version}"))
+/// A lockfile, a registry and a package name all carry whatever their author wrote, and a
+/// browser runs a `javascript:` href. A link is safe only when sanitising it changes
+/// nothing: another scheme, credentials, a control character, a dot segment or an
+/// unencoded character each make the sanitised form differ, and each is how a link hides
+/// where it goes.
+fn checked_link(url: String) -> LinkOutput {
+    let status = match sanitised(&url) {
+        // A bare origin gains its root slash, which moves nothing.
+        Some(clean) if clean == url || clean.strip_suffix('/') == Some(url.as_str()) => {
+            LinkStatusOutput::Safe
         }
-        Some(PackageOrigin::Remote { url }) => Some(url.clone()),
-        _ => facts.and_then(|facts| facts.repository.clone()),
-    }
+        _ => LinkStatusOutput::Suspicious,
+    };
+
+    LinkOutput { url, status }
+}
+
+fn sanitised(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let plain = parsed.scheme() == "https"
+        && parsed.host().is_some()
+        && parsed.username().is_empty()
+        && parsed.password().is_none();
+
+    plain.then(|| parsed.into())
 }
 
 fn facts_output(facts: &PackageFacts) -> PackageFactsOutput {
@@ -928,5 +964,48 @@ fn signal_key_output(key: SignalKey) -> &'static str {
         SignalKey::TestsFailing => "tests_failing",
         SignalKey::LinksAdded => "links_added",
         SignalKey::RepositoryHygiene => "repository_hygiene",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(url: &str) -> LinkStatusOutput {
+        checked_link(url.to_owned()).status
+    }
+
+    #[test]
+    fn a_plain_https_link_is_safe() {
+        assert_eq!(
+            status("https://docs.rs/serde/1.0.200"),
+            LinkStatusOutput::Safe
+        );
+        assert_eq!(status("https://serde.rs"), LinkStatusOutput::Safe);
+        assert_eq!(
+            status("https://npmx.dev/package/@scope/name/v/1.0.0"),
+            LinkStatusOutput::Safe
+        );
+    }
+
+    #[test]
+    fn a_link_the_sanitiser_rewrites_is_suspicious_and_kept_as_written() {
+        for url in [
+            "javascript:alert(1)",
+            "JavaScript:alert(1)",
+            "java\tscript:alert(1)",
+            " javascript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "http://example.com/",
+            "https://github.com@evil.example/",
+            "https://evil.example\n/",
+            "https://crates.io/crates/../../evil/1.0.0",
+            "https://example.com/a b",
+            "not a url",
+        ] {
+            let link = checked_link(url.to_owned());
+            assert_eq!(link.status, LinkStatusOutput::Suspicious, "{url:?}");
+            assert_eq!(link.url, url);
+        }
     }
 }

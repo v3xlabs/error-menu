@@ -2,6 +2,7 @@ import { FiBookOpen, FiGitBranch } from "solid-icons/fi";
 import { For, Show } from "solid-js";
 
 import type { Analysis } from "../api/projects";
+import { CheckedLink } from "./CheckedLink";
 
 type Package = NonNullable<Analysis["analyzers"][number]["findings"][number]["package"]>;
 
@@ -33,29 +34,17 @@ export const PackageTail = (properties: { package: Package; }) => (
       {chip => <span class="shrink-0 font-mono text-slate-400 dark:text-slate-500">{chip}</span>}
     </For>
     <Show when={properties.package.links.docs}>
-      {url => (
-        <a
-          href={url()}
-          target="_blank"
-          rel="noreferrer"
-          class={LINK}
-          title={`Documentation for ${properties.package.name}`}
-        >
+      {link => (
+        <CheckedLink link={link()} label={`Documentation for ${properties.package.name}`} class={LINK}>
           <FiBookOpen size={12} />
-        </a>
+        </CheckedLink>
       )}
     </Show>
     <Show when={properties.package.links.source}>
-      {url => (
-        <a
-          href={url()}
-          target="_blank"
-          rel="noreferrer"
-          class={LINK}
-          title={`Source of ${properties.package.name}`}
-        >
+      {link => (
+        <CheckedLink link={link()} label={`Source of ${properties.package.name}`} class={LINK}>
           <FiGitBranch size={12} />
-        </a>
+        </CheckedLink>
       )}
     </Show>
   </>

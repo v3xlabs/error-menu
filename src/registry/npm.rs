@@ -58,19 +58,13 @@ fn deprecation(value: serde_json::Value) -> Option<String> {
     }
 }
 
-/// A packument spells the repository as git wants it, and a browser cannot open that.
 fn repository_url(repository: Repository) -> Option<String> {
     let raw = match repository {
         Repository::Url(url) => url,
         Repository::Table { url } => url?,
     };
-    let url = raw
-        .strip_prefix("git+")
-        .unwrap_or(&raw)
-        .replace("git://", "https://");
-    let url = url.strip_suffix(".git").unwrap_or(&url).to_owned();
 
-    url.starts_with("https://").then_some(url)
+    Some(crate::vcs::browser_url(&raw))
 }
 
 #[derive(Debug, Deserialize)]

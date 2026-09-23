@@ -2734,6 +2734,17 @@ export interface components {
         JobsOutput: {
             jobs: components["schemas"]["JobOutput"][];
         };
+        /**
+         * LinkOutput
+         * @description A link as its author wrote it. A `suspicious` link is shown and never followed, because
+         *     what hides in a link is the thing a reviewer needs to see.
+         */
+        LinkOutput: {
+            url: string;
+            status: components["schemas"]["LinkStatusOutput"];
+        };
+        /** @enum {string} */
+        LinkStatusOutput: "safe" | "suspicious";
         /** MoveProject */
         MoveProject: {
             organization_id: string;
@@ -2792,9 +2803,9 @@ export interface components {
          *     a stored copy would be a second answer that ages.
          */
         PackageLinksOutput: {
-            registry?: string;
-            docs?: string;
-            source?: string;
+            registry?: components["schemas"]["LinkOutput"];
+            docs?: components["schemas"]["LinkOutput"];
+            source?: components["schemas"]["LinkOutput"];
         };
         /** PackageOutput */
         PackageOutput: {

@@ -281,9 +281,10 @@ impl Snapshot {
             .transpose()
     }
 
-    /// Snapshots of this project that recorded a package integrity and have not been
-    /// audited against the registry yet. The audit run is its own record that it happened,
-    /// so a snapshot leaves this list the moment one exists.
+    /// Snapshots of this project whose public-registry packages recorded an integrity, have
+    /// an answer from the registry for every one of them, and have not been audited yet. The
+    /// audit run is its own record that it happened, so it must not be written while a
+    /// coordinate is unanswered: that coordinate would never be compared.
     pub async fn awaiting_audit(
         database: &Database,
         project_id: Id<Project>,
@@ -295,8 +296,20 @@ impl Snapshot {
              JOIN runs r ON r.snapshot_id = n.id \
              JOIN findings f ON f.run_id = r.id \
              WHERE s.project_id = ? AND f.package_integrity IS NOT NULL \
+               AND f.origin_kind = 'public_registry' \
                AND NOT EXISTS ( \
                    SELECT 1 FROM runs a WHERE a.snapshot_id = n.id AND a.analyzer = ? \
+               ) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM runs ur JOIN findings u ON u.run_id = ur.id \
+                   WHERE ur.snapshot_id = n.id AND u.package_integrity IS NOT NULL \
+                     AND u.origin_kind = 'public_registry' \
+                     AND NOT EXISTS ( \
+                         SELECT 1 FROM package_facts p \
+                         WHERE p.ecosystem = u.ecosystem AND p.name = u.package_name \
+                           AND p.version = u.package_version \
+                           AND p.status IN ('known', 'absent') \
+                     ) \
                )",
         )
         .bind(project_id.raw())

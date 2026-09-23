@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use serde::Deserialize;
 
 use super::{PackageFacts, ReadError, get};
@@ -6,6 +8,11 @@ use crate::prelude::*;
 const CRATES: &str = "https://crates.io/api/v1/crates";
 const DOCS: &str = "https://docs.rs/crate";
 
+/// crates.io asks API clients for at most one request per second
+/// (https://crates.io/data-access). Jobs run one at a time, so a pause before each request
+/// holds the whole worker to that.
+const CRATES_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Three reads per version. The crate endpoint is called with `?include=` because without
 /// it crates.io embeds every published version: 440990 bytes for serde against 952.
 pub(super) async fn read(
@@ -13,7 +20,9 @@ pub(super) async fn read(
     name: &str,
     version: &str,
 ) -> Result<PackageFacts, ReadError> {
+    tokio::time::sleep(CRATES_INTERVAL).await;
     let release: VersionResponse = get(client, &format!("{CRATES}/{name}/{version}")).await?;
+    tokio::time::sleep(CRATES_INTERVAL).await;
     let published: CrateResponse = get(client, &format!("{CRATES}/{name}?include=")).await?;
     let documented = get::<DocsStatus>(client, &format!("{DOCS}/{name}/{version}/status.json"))
         .await

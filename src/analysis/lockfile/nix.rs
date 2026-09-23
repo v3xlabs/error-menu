@@ -41,8 +41,9 @@ fn describe(locked: &Locked) -> String {
     }
 }
 
-/// A flake input is a repository, so its origin is the repository it names. `describe`
-/// stays for the detail sentence; this is the part a link can be built from.
+/// A flake input is a repository, so its origin is the repository it names, at the
+/// revision it pins when the host is a forge that serves one. `describe` stays for the
+/// detail sentence; this is the part a link can be built from.
 fn origin_of(locked: &Locked) -> PackageOrigin {
     let host = match locked.kind.as_str() {
         "github" => "https://github.com",
@@ -57,8 +58,11 @@ fn origin_of(locked: &Locked) -> PackageOrigin {
         }
     };
 
-    match (&locked.owner, &locked.repo) {
-        (Some(owner), Some(repo)) => PackageOrigin::Remote {
+    match (&locked.owner, &locked.repo, &locked.rev) {
+        (Some(owner), Some(repo), Some(rev)) => PackageOrigin::Remote {
+            url: format!("{host}/{owner}/{repo}/tree/{rev}"),
+        },
+        (Some(owner), Some(repo), None) => PackageOrigin::Remote {
             url: format!("{host}/{owner}/{repo}"),
         },
         _ => PackageOrigin::Local,
@@ -134,7 +138,9 @@ mod tests {
         assert_eq!(
             nixpkgs.origin,
             PackageOrigin::Remote {
-                url: "https://github.com/NixOS/nixpkgs".to_owned()
+                url:
+                    "https://github.com/NixOS/nixpkgs/tree/ef34387ddd751e1ab8857adf4676492d32eb24ec"
+                        .to_owned()
             }
         );
         assert_eq!(nixpkgs.source.as_deref(), Some("github:NixOS/nixpkgs"));
