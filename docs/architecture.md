@@ -59,6 +59,12 @@ analysis takes over the reading that has no run behind it rather than writing a 
 beside it. A reader asking for a re-scan of a head that already has runs gets a new reading:
 that one is a fresh answer, not a repeat of the same sighting.
 
+The analyses API reads at most fifty snapshots per request. `before` uses the last snapshot ID
+returned by `next_before` to read older entries. `kind` and `key` select one subject's history;
+`latest=true` selects the newest reading per subject before pagination. Project dashboards use
+that latest-per-subject view, and a subject page loads older readings on request. A scan response
+loads only its requested snapshot.
+
 Anything git publishes is read from git. The default branch and its head come from the ref
 advertisement that opens every connection to the remote, which costs one round trip, no
 objects, and nothing from the forge's request budget. The forge is asked for one thing: the
@@ -113,9 +119,18 @@ interesting if several apps must be live at once.
 
 ## Worker trust
 
-Workers touch untrusted repository content. A worker can lease a job and post a result, and
-nothing else. It has no database access, no forge credentials, and no host filesystem access.
-This is a security boundary first and a scaling unit second.
+The current worker runs in the app process and reads SQLite, forge credentials, and local mirrors.
+Repository clone and fetch use gix transports, including an external SSH process. URL validation
+does not constrain the address of the socket that gix opens: a domain can resolve to an internal
+address after validation. Forge HTTP uses a resolver that rejects non-public addresses at
+connection time, but that protection does not apply to gix or its SSH child process.
+
+Before admitting untrusted project remotes, deploy the process and its children with an egress
+policy that rejects loopback, private, link-local, and other non-public IPv4 and IPv6 destinations
+at socket connect. Permit DNS through a controlled path. Verify the network implementation's
+handling of pod-local loopback, redirects, and translated addresses; a Kubernetes NetworkPolicy
+alone may not cover every one of these paths. A future separate worker process can have this
+policy without restricting the app's local HTTP traffic.
 
 ## Work sources
 

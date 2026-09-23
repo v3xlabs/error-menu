@@ -769,7 +769,12 @@ export interface paths {
         };
         get: {
             parameters: {
-                query?: never;
+                query?: {
+                    before?: string;
+                    kind?: string;
+                    key?: string;
+                    latest?: boolean;
+                };
                 header?: never;
                 path: {
                     project_id: string;
@@ -2769,6 +2774,7 @@ export interface components {
         /** AnalysesOutput */
         AnalysesOutput: {
             analyses: components["schemas"]["AnalysisOutput"][];
+            next_before?: string;
         };
         /** AnalysisOutput */
         AnalysisOutput: {

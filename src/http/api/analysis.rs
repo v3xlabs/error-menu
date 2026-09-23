@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use poem_openapi::param::Path;
+use poem_openapi::param::{Path, Query};
 use poem_openapi::payload::Json;
 use poem_openapi::{ApiResponse, Enum, Object, OpenApi};
 
@@ -40,6 +40,10 @@ impl AnalysisApi {
         &self,
         CurrentUser(user): CurrentUser,
         project_id: Path<String>,
+        before: Query<Option<String>>,
+        kind: Query<Option<String>>,
+        key: Query<Option<String>>,
+        latest: Query<Option<bool>>,
     ) -> ListAnalysesResponse {
         let project_id = match project_id.0.parse::<Id<Project>>() {
             Ok(project_id) => project_id,
@@ -62,16 +66,42 @@ impl AnalysisApi {
                     return ListAnalysesResponse::Failed(Json(Error { message }));
                 }
             };
+        let before = match before.0.map(|id| id.parse::<Id<Snapshot>>()).transpose() {
+            Ok(before) => before,
+            Err(error) => {
+                return ListAnalysesResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
+        };
+        let subject = match (kind.0.as_deref(), key.0.as_deref()) {
+            (None, None) => None,
+            (Some(kind @ ("change" | "branch" | "commit")), Some(key)) => Some((kind, key)),
+            _ => return ListAnalysesResponse::Invalid(Json(Error {
+                message:
+                    "kind and key must both be given, and kind must be change, branch, or commit"
+                        .to_owned(),
+            })),
+        };
         let context = match read_context(&self.state.database, &project).await {
             Ok(context) => context,
             Err(message) => return ListAnalysesResponse::Failed(Json(Error { message })),
         };
-        match SnapshotAnalysis::for_project(&self.state.database, project_id).await {
-            Ok(analyses) => ListAnalysesResponse::Found(Json(AnalysesOutput {
+        match SnapshotAnalysis::page(
+            &self.state.database,
+            project_id,
+            before,
+            subject,
+            latest.0.unwrap_or(false),
+        )
+        .await
+        {
+            Ok((analyses, next_before)) => ListAnalysesResponse::Found(Json(AnalysesOutput {
                 analyses: analyses
                     .into_iter()
                     .map(|analysis| analysis_output(analysis, &context))
                     .collect(),
+                next_before: next_before.map(|id| id.encode()),
             })),
             Err(error) => ListAnalysesResponse::Failed(Json(Error {
                 message: error.to_string(),
@@ -177,18 +207,19 @@ impl AnalysisApi {
                         return AnalyzeProjectResponse::Failed(Json(Error { message }));
                     }
                 };
-                match SnapshotAnalysis::for_project(&self.state.database, project_id).await {
-                    Ok(analyses) => match analyses
-                        .into_iter()
-                        .find(|stored| stored.snapshot.id == analysis.snapshot.id)
-                    {
-                        Some(stored) => {
-                            AnalyzeProjectResponse::Created(Json(analysis_output(stored, &context)))
-                        }
-                        None => AnalyzeProjectResponse::Failed(Json(Error {
-                            message: "analysis was not stored".to_owned(),
-                        })),
-                    },
+                match SnapshotAnalysis::for_snapshot(
+                    &self.state.database,
+                    project_id,
+                    analysis.snapshot.id,
+                )
+                .await
+                {
+                    Ok(Some(stored)) => {
+                        AnalyzeProjectResponse::Created(Json(analysis_output(stored, &context)))
+                    }
+                    Ok(None) => AnalyzeProjectResponse::Failed(Json(Error {
+                        message: "analysis was not stored".to_owned(),
+                    })),
                     Err(error) => AnalyzeProjectResponse::Failed(Json(Error {
                         message: error.to_string(),
                     })),
@@ -260,11 +291,13 @@ impl AnalysisApi {
             Err(message) => return AnalyzeProjectResponse::Failed(Json(Error { message })),
         };
 
-        match SnapshotAnalysis::for_project(&self.state.database, project_id).await {
-            Ok(mut analyses) => match take_analysis(&mut analyses, snapshot.id, &context) {
-                Ok(output) => AnalyzeProjectResponse::Created(Json(output)),
-                Err(message) => AnalyzeProjectResponse::Failed(Json(Error { message })),
-            },
+        match SnapshotAnalysis::for_snapshot(&self.state.database, project_id, snapshot.id).await {
+            Ok(Some(analysis)) => {
+                AnalyzeProjectResponse::Created(Json(analysis_output(analysis, &context)))
+            }
+            Ok(None) => AnalyzeProjectResponse::Failed(Json(Error {
+                message: "discovery analysis was not stored".to_owned(),
+            })),
             Err(error) => AnalyzeProjectResponse::Failed(Json(Error {
                 message: error.to_string(),
             })),
@@ -516,6 +549,7 @@ struct AnalysisOutput {
 #[oai(skip_serializing_if_is_none)]
 struct AnalysesOutput {
     analyses: Vec<AnalysisOutput>,
+    next_before: Option<String>,
 }
 
 #[derive(Debug, Object)]
@@ -581,22 +615,26 @@ async fn discovery_output(
     project: &Project,
     discovery: discovery::Discovery,
 ) -> Result<DiscoveryOutput, String> {
-    let mut analyses = SnapshotAnalysis::for_project(database, project.id)
-        .await
-        .map_err(|error| error.to_string())?;
     let context = read_context(database, project).await?;
-    let default_branch = take_analysis(
-        &mut analyses,
+    let default_branch = SnapshotAnalysis::for_snapshot(
+        database,
+        project.id,
         discovery.default_branch.analysis.snapshot.id,
-        &context,
-    )?;
+    )
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "discovery analysis was not stored".to_owned())?;
     let mut pull_requests = Vec::with_capacity(discovery.changes.len());
     for change in discovery.changes {
-        pull_requests.push(take_analysis(&mut analyses, change.snapshot.id, &context)?);
+        let analysis = SnapshotAnalysis::for_snapshot(database, project.id, change.snapshot.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "discovery analysis was not stored".to_owned())?;
+        pull_requests.push(analysis_output(analysis, &context));
     }
 
     Ok(DiscoveryOutput {
-        default_branch,
+        default_branch: analysis_output(default_branch, &context),
         pull_requests,
     })
 }
@@ -610,21 +648,6 @@ async fn read_context(database: &Database, project: &Project) -> Result<ReadCont
             .map_err(|error| error.to_string())?,
         repository: Repository::from_remote(&project.remote, project.forge_kind).ok(),
     })
-}
-
-fn take_analysis(
-    analyses: &mut Vec<SnapshotAnalysis>,
-    snapshot_id: Id<Snapshot>,
-    context: &ReadContext,
-) -> Result<AnalysisOutput, String> {
-    let Some(index) = analyses
-        .iter()
-        .position(|analysis| analysis.snapshot.id == snapshot_id)
-    else {
-        return Err("discovery analysis was not stored".to_owned());
-    };
-
-    Ok(analysis_output(analyses.remove(index), context))
 }
 
 fn analysis_output(analysis: SnapshotAnalysis, context: &ReadContext) -> AnalysisOutput {

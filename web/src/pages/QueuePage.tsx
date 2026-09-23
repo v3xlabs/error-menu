@@ -83,9 +83,16 @@ const renderJobs = (state: QueuePageState): JSX.Element => {
 
 export const QueuePage = () => {
   const [state, setState] = createSignal<QueuePageState>({ phase: "loading" });
+  let requestVersion = 0;
+  const cancelLoads = (): void => {
+    requestVersion += 1;
+  };
 
   const load = async (): Promise<void> => {
+    const request = ++requestVersion;
     const [jobs, projects] = await Promise.all([listJobs(), listProjects()]);
+
+    if (request !== requestVersion) return;
 
     if (!jobs.ok) {
       setState({ phase: "error", message: jobs.message });
@@ -104,6 +111,8 @@ export const QueuePage = () => {
     () => undefined,
     () => {
       void load();
+
+      return cancelLoads;
     },
   );
   createEffect(
