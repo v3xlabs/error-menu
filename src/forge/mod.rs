@@ -153,6 +153,32 @@ pub struct DiscoveredChange {
     pub metadata: ForgeMetadata,
 }
 
+pub fn moved_remote(remote: &RemoteUrl, changes: &[DiscoveredChange]) -> Option<RemoteUrl> {
+    let change = reqwest::Url::parse(changes.first()?.metadata.url.as_deref()?).ok()?;
+    // The last two segments name the change, and GitLab puts a dash in front of them.
+    let path = change
+        .path()
+        .trim_end_matches('/')
+        .rsplitn(3, '/')
+        .nth(2)?
+        .trim_end_matches("/-")
+        .trim_start_matches('/');
+    let mut moved = reqwest::Url::parse(remote.as_str()).ok()?;
+    let stored = moved.path().trim_start_matches('/');
+    let stored = stored.strip_suffix(".git").unwrap_or(stored);
+    if path.is_empty() || path.eq_ignore_ascii_case(stored) {
+        return None;
+    }
+    let suffix = if moved.path().ends_with(".git") {
+        ".git"
+    } else {
+        ""
+    };
+    moved.set_path(&format!("/{path}{suffix}"));
+
+    RemoteUrl::new(moved.as_str()).ok()
+}
+
 /// Where a forge publishes the head of a change, asked of the forge itself.
 pub fn change_fetch_ref(kind: ForgeKind, number: u64) -> String {
     match kind {
@@ -201,5 +227,69 @@ mod tests {
             Some(CheckConclusion::Cancelled)
         );
         assert_eq!(check_conclusion("running"), None);
+    }
+
+    fn change(url: &str) -> Vec<DiscoveredChange> {
+        let head = CommitSha::new(&"1".repeat(40)).unwrap();
+
+        vec![DiscoveredChange {
+            number: 7,
+            fetch_ref: String::new(),
+            base: head.clone(),
+            head,
+            metadata: ForgeMetadata {
+                url: Some(url.to_owned()),
+                ..ForgeMetadata::default()
+            },
+        }]
+    }
+
+    #[test]
+    fn a_change_names_the_repository_it_was_published_under() {
+        let moved = |remote: &str, url: &str| {
+            let remote = RemoteUrl::new(remote).unwrap();
+
+            moved_remote(&remote, &change(url)).map(|moved| moved.to_string())
+        };
+
+        // The name the project was added with is the only thing that changes.
+        assert_eq!(
+            moved(
+                "ssh://git@github.com/joyent/node.git",
+                "https://github.com/nodejs/node-v0.x-archive/pull/7"
+            ),
+            Some("ssh://git@github.com/nodejs/node-v0.x-archive.git".to_owned())
+        );
+        assert_eq!(
+            moved(
+                "https://gitlab.com/group/old-repository",
+                "https://gitlab.com/group/subgroup/new-repository/-/merge_requests/7"
+            ),
+            Some("https://gitlab.com/group/subgroup/new-repository".to_owned())
+        );
+        // A change in the repository the project already watches says nothing new.
+        assert_eq!(
+            moved(
+                "https://github.com/owner/repository",
+                "https://github.com/owner/repository/pull/7"
+            ),
+            None
+        );
+        // A trailing slash names the same change, not a repository beside it.
+        assert_eq!(
+            moved(
+                "https://github.com/owner/repository",
+                "https://github.com/owner/repository/pull/7/"
+            ),
+            None
+        );
+        // A spelling difference is not a move.
+        assert_eq!(
+            moved(
+                "https://github.com/Torvalds/Linux",
+                "https://github.com/torvalds/linux/pull/7"
+            ),
+            None
+        );
     }
 }

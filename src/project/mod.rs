@@ -288,6 +288,21 @@ impl Project {
         Ok(())
     }
 
+    pub async fn repoint(
+        &mut self,
+        database: &Database,
+        remote: RemoteUrl,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query("UPDATE projects SET remote_url = ? WHERE id = ?")
+            .bind(remote.as_str())
+            .bind(self.id.raw())
+            .execute(&database.pool)
+            .await?;
+        self.remote = remote;
+
+        Ok(())
+    }
+
     /// Moves the project, and records where it came from in the same transaction, so a
     /// reader can never find a project in an organization with nothing saying how it got
     /// there.

@@ -3,7 +3,9 @@ use jiff::Timestamp;
 use crate::analysis::runner::{self, Analysis, AnalysisError, Target};
 use crate::app::AppState;
 use crate::forge::reader::ForgeReadError;
-use crate::forge::{ChangeState, CommitReading, DiscoveredChange, ForgeAccount, ForgeMetadata};
+use crate::forge::{
+    ChangeState, CommitReading, DiscoveredChange, ForgeAccount, ForgeMetadata, moved_remote,
+};
 use crate::prelude::*;
 use crate::vcs::mirror::{Mirror, MirrorError};
 
@@ -61,7 +63,7 @@ pub struct ChangeAnalysis {
 
 pub async fn run(state: &AppState, project_id: Id<Project>) -> Result<Discovery, DiscoveryError> {
     let _project_lock = runner::project_lock(project_id).await;
-    let project = Project::load(&state.database, project_id)
+    let mut project = Project::load(&state.database, project_id)
         .await?
         .ok_or(DiscoveryError::ProjectNotFound)?;
     let mirror = Mirror::open(&state.mirrors, &project.remote).await?;
@@ -130,6 +132,9 @@ pub async fn run(state: &AppState, project_id: Id<Project>) -> Result<Discovery,
         .forge
         .changes(&project.remote, project.forge_kind)
         .await?;
+    if let Some(remote) = moved_remote(&project.remote, &discovered) {
+        project.repoint(&state.database, remote).await?;
+    }
     let mut changes = Vec::with_capacity(discovered.len());
     for change in discovered {
         changes.push(read_change(state, &project, &mirror, &mut fetched, change).await?);
