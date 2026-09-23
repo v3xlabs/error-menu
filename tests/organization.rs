@@ -472,3 +472,25 @@ async fn deleting_a_project_takes_its_grants_with_it() {
         None
     );
 }
+
+#[tokio::test]
+async fn a_moved_repository_repoints_the_project() {
+    let fixture = Fixture::build().await;
+    let personal = fixture.organization("Personal").await;
+    let mut project = fixture.project(&personal, "old-name").await;
+    let moved = RemoteUrl::new("https://github.com/owner/new-name").expect("a url");
+
+    project
+        .repoint(&fixture.database, moved.clone())
+        .await
+        .expect("stores where the repository moved");
+
+    assert_eq!(
+        Project::load(&fixture.database, project.id)
+            .await
+            .expect("answers")
+            .expect("the project is still there")
+            .remote,
+        moved
+    );
+}

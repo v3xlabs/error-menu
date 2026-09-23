@@ -11,7 +11,9 @@ use crate::analysis::ci_checks::CheckRun;
 use crate::prelude::*;
 use crate::vcs::CommitShaError;
 
-const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+/// How many times a forge may redirect a read before it is refused.
+const MAX_FORGE_REDIRECTS: usize = 10;
 pub(crate) const PAGE_SIZE: &str = "100";
 
 #[derive(Debug, thiserror::Error)]
@@ -156,7 +158,17 @@ impl ForgeReader {
         Ok(Self {
             client: reqwest::Client::builder()
                 .https_only(true)
-                .redirect(reqwest::redirect::Policy::none())
+                .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                    if attempt.previous().len() > MAX_FORGE_REDIRECTS
+                        || crate::outbound::validate_url(attempt.url()).is_err()
+                    {
+                        return attempt.error(std::io::Error::other(
+                            "the forge redirected somewhere the read may not go",
+                        ));
+                    }
+                    attempt.follow()
+                }))
+                .referer(false)
                 .timeout(std::time::Duration::from_secs(15))
                 .user_agent(concat!("error.menu/", env!("CARGO_PKG_VERSION")))
                 .build()?,
@@ -415,6 +427,15 @@ mod tests {
         reqwest::Response::from(built.body(Vec::new()).expect("a response"))
     }
 
+    fn response_with_body(body: Vec<u8>) -> reqwest::Response {
+        reqwest::Response::from(
+            poem::http::Response::builder()
+                .status(200)
+                .body(body)
+                .expect("a response"),
+        )
+    }
+
     #[test]
     fn an_exhausted_budget_is_told_apart_from_a_refusal_and_keeps_its_reset() {
         let exhausted = refusal(
@@ -492,6 +513,24 @@ mod tests {
             .build()
             .unwrap();
         assert!(elsewhere.headers().get("authorization").is_none());
+    }
+
+    #[tokio::test]
+    async fn decodes_responses_up_to_eight_mebibytes_and_rejects_larger_ones() {
+        let mut accepted = Vec::with_capacity(MAX_RESPONSE_BYTES);
+        accepted.push(b'[');
+        accepted.resize(MAX_RESPONSE_BYTES - 1, b' ');
+        accepted.push(b']');
+        let value: Vec<serde_json::Value> = decode(response_with_body(accepted))
+            .await
+            .expect("the eight-mebibyte response is accepted");
+        assert!(value.is_empty());
+
+        let oversized = vec![b' '; MAX_RESPONSE_BYTES + 1];
+        assert!(matches!(
+            decode::<serde_json::Value>(response_with_body(oversized)).await,
+            Err(ForgeReadError::ResponseTooLarge)
+        ));
     }
 
     #[test]
