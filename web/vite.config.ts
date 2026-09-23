@@ -9,6 +9,7 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": BACKEND_ORIGIN,
+      "/auth": BACKEND_ORIGIN,
       "/openapi.json": BACKEND_ORIGIN,
     },
   },

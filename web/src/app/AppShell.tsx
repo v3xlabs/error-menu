@@ -248,7 +248,7 @@ const AccountControls = () => {
         <span class="text-sm text-slate-500 dark:text-slate-400" role="status">Checking account...</span>
       </Match>
       <Match when={account.state().phase === "anonymous"}>
-        <a href="/auth/github/login" class="rounded-control bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white">
+        <a href="/auth/github/login" rel="external" class="rounded-control bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white">
           Sign in
         </a>
       </Match>
