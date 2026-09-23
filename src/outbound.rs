@@ -176,6 +176,15 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn domain_resolving_to_loopback_is_rejected() {
+        let name = "localhost".parse().unwrap();
+        let result = PublicResolver.resolve(name).await;
+        assert!(
+            matches!(result, Err(error) if error.to_string().contains("did not resolve exclusively to public addresses"))
+        );
+    }
+
     #[test]
     fn literal_and_encoded_private_hosts_cannot_bypass_dns_policy() {
         for url in [

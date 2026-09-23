@@ -287,15 +287,42 @@ pub fn delta(
             continue;
         };
 
-        for package in &arrivals {
-            let (direction, detail) = movement(&departures, package);
+        for &package in &arrivals {
+            // A flake input's source names its repository without the pinned revision, so a
+            // new revision from another repository is a swap, not a bump. npm and cargo git
+            // sources embed the version, and differ on every ordinary bump.
+            let swapped = kind == Kind::Nix
+                && departures
+                    .iter()
+                    .all(|departure| departure.source != package.source);
+            let (direction, moved) = movement(&departures, package);
+            let (rule, severity, detail) = if swapped {
+                let previous = departures
+                    .iter()
+                    .map(|departure| describe(departure.source.as_deref()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                (
+                    SOURCE_CHANGED,
+                    Severity::High,
+                    format!(
+                        "{} {} now resolves from {} instead of {previous}",
+                        package.name,
+                        package.version,
+                        describe(package.source.as_deref()),
+                    ),
+                )
+            } else {
+                (PACKAGE_VERSION_CHANGED, Severity::Info, moved)
+            };
             findings.push(finding(
                 &mut occurrences,
                 path,
                 kind,
                 Reported {
-                    rule: PACKAGE_VERSION_CHANGED,
-                    severity: Severity::Info,
+                    rule,
+                    severity,
                     package,
                     movement: Some(direction),
                     detail,
@@ -559,6 +586,56 @@ mod tests {
             findings[0].detail,
             "serde was downgraded from 1.0.10 to 1.0.9"
         );
+    }
+
+    fn flake_lock(owner: &str, rev: &str) -> String {
+        format!(
+            r#"{{"nodes": {{
+                "root": {{ "inputs": {{ "nixpkgs": "nixpkgs" }} }},
+                "nixpkgs": {{ "locked": {{
+                    "type": "github", "owner": "{owner}", "repo": "nixpkgs",
+                    "rev": "{rev}", "narHash": "sha256-{rev}"
+                }} }}
+            }}, "root": "root", "version": 7}}"#
+        )
+    }
+
+    #[test]
+    fn a_flake_input_moving_to_another_repository_is_a_source_change() {
+        let base = flake_lock("NixOS", "aaa");
+        let head = flake_lock("attacker", "bbb");
+
+        let findings = delta(
+            Kind::Nix,
+            &RepoPath::new("flake.lock").unwrap(),
+            Some(&base),
+            &head,
+        )
+        .expect("parses");
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::High);
+        assert_eq!(
+            findings[0].detail,
+            "nixpkgs bbb now resolves from github:attacker/nixpkgs instead of github:NixOS/nixpkgs"
+        );
+    }
+
+    #[test]
+    fn a_flake_input_bumped_in_its_own_repository_stays_informational() {
+        let base = flake_lock("NixOS", "aaa");
+        let head = flake_lock("NixOS", "bbb");
+
+        let findings = delta(
+            Kind::Nix,
+            &RepoPath::new("flake.lock").unwrap(),
+            Some(&base),
+            &head,
+        )
+        .expect("parses");
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Info);
     }
 
     #[test]

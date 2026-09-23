@@ -76,7 +76,19 @@ export const FindingLine = (properties: { finding: Finding; showLocation?: boole
 export const PackageLine = (properties: { finding: Finding; name: string; version: string; }) => (
   <li class={["grid grid-cols-[12px_minmax(0,1fr)_auto] items-baseline gap-2.5 font-mono text-xs", style(properties.finding)]} title={properties.finding.detail}>
     <span aria-hidden="true">{icon(properties.finding)}</span>
-    <span aria-hidden="true" class="truncate">{properties.name}</span>
+    <span class="flex min-w-0 items-baseline gap-2">
+      <span aria-hidden="true" class="truncate">{properties.name}</span>
+      {/* A package from its public registry has a registry link, and its source link is the
+          repository that registry claims. Without one, the source link is where the lockfile
+          resolves the package from, which a name alone does not tell: `nixpkgs` can be any fork. */}
+      <Show when={properties.finding.package?.links.registry === undefined ? properties.finding.package?.links.source : undefined}>
+        {link => (
+          <CheckedLink link={link()} label={`Where ${properties.name} resolves from`} class="min-w-0 truncate text-slate-400 hover:underline dark:text-slate-500">
+            {link().url}
+          </CheckedLink>
+        )}
+      </Show>
+    </span>
     <span aria-hidden="true" class="tabular-nums opacity-80">{properties.version}</span>
     <span class="sr-only">{properties.finding.detail}</span>
   </li>

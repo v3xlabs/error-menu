@@ -26,9 +26,23 @@ export const ProjectPage = () => {
   const [jobs, setJobs] = createSignal<readonly Job[]>([]);
   const [commits, setCommits] = createSignal<readonly Commit[]>([]);
   const [queueError, setQueueError] = createSignal<string | null>(null);
+  let routeVersion = 0;
+  let projectRead = 0;
+  let historyRead = 0;
+  let jobsRead = 0;
+  let discoveryRead = 0;
+
+  const isCurrent = (projectId: string, version: number): boolean =>
+    routeParameters.projectId === projectId && routeVersion === version;
 
   const reload = async (projectId: string): Promise<void> => {
+    if (routeParameters.projectId !== projectId) return;
+
+    const version = routeVersion;
+    const request = ++projectRead;
     const result = await readProject(projectId);
+
+    if (request !== projectRead || !isCurrent(projectId, version)) return;
 
     setState(result.ok
       ? { phase: "loaded", project: result.value }
@@ -37,17 +51,47 @@ export const ProjectPage = () => {
   // A commit list is read from the mirror, so a project that was never discovered has no
   // mirror to read and answers 404. That is an empty history, not a page failure.
   const loadHistory = async (projectId: string): Promise<void> => {
-    const [analyses, commits] = await Promise.all([listAnalyses(projectId), listCommits(projectId, SHOWN_COMMITS)]);
+    if (routeParameters.projectId !== projectId) return;
 
-    setHistoryState(analyses.ok
-      ? { phase: "loaded", analyses: analyses.value }
-      : { phase: "error", message: analyses.message });
+    const version = routeVersion;
+    const request = ++historyRead;
+    const commitsRequest = listCommits(projectId, SHOWN_COMMITS);
+    const analyses: Analysis[] = [];
+    let before: string | undefined;
+
+    do {
+      const page = await listAnalyses(projectId, { latest: true, ...(before !== undefined && { before }) });
+
+      if (request !== historyRead || !isCurrent(projectId, version)) return;
+
+      if (!page.ok) {
+        setHistoryState({ phase: "error", message: page.message });
+
+        return;
+      }
+
+      analyses.push(...page.value.analyses);
+      before = page.value.next_before;
+    } while (before !== undefined);
+
+    const commits = await commitsRequest;
+
+    if (request !== historyRead || !isCurrent(projectId, version)) return;
+
+    setHistoryState({ phase: "loaded", analyses });
     setCommits(commits.ok ? commits.value : []);
   };
   const discover = async (projectId: string): Promise<void> => {
+    if (routeParameters.projectId !== projectId) return;
+
+    const version = routeVersion;
+    const request = ++discoveryRead;
+
     setDiscoverState({ phase: "running" });
 
     const result = await discoverProject(projectId);
+
+    if (request !== discoveryRead || !isCurrent(projectId, version)) return;
 
     setDiscoverState(result.ok ? { phase: "ready" } : { phase: "error", message: result.message });
     await loadHistory(projectId);
@@ -55,7 +99,13 @@ export const ProjectPage = () => {
   // A finished scan changes what the analyses read, so the queue read is what tells the
   // page to look again.
   const loadJobs = async (projectId: string): Promise<void> => {
+    if (routeParameters.projectId !== projectId) return;
+
+    const version = routeVersion;
+    const request = ++jobsRead;
     const result = await listJobs(projectId);
+
+    if (request !== jobsRead || !isCurrent(projectId, version)) return;
 
     if (!result.ok) {
       setQueueError(result.message);
@@ -89,11 +139,20 @@ export const ProjectPage = () => {
   createEffect(
     () => routeParameters.projectId,
     (projectId) => {
-      void readProject(projectId).then((result) => {
-        setState(result.ok ? { phase: "loaded", project: result.value } : { phase: "error", message: result.message });
-      });
+      ++routeVersion;
+      setState({ phase: "loading" });
+      setHistoryState({ phase: "loading" });
+      setDiscoverState({ phase: "ready" });
+      setJobs([]);
+      setCommits([]);
+      setQueueError(null);
+      void reload(projectId);
       void loadHistory(projectId);
       void loadJobs(projectId);
+
+      return () => {
+        routeVersion += 1;
+      };
     },
   );
 

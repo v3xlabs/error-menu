@@ -14,8 +14,7 @@ use crate::user::{attempt, session};
 use crate::worker::discovery;
 use tracing::Instrument;
 
-/// How long a claim holds a job before another worker may take it. It has to outlast the
-/// slowest honest run: a first clone of a large repository plus a walk of its open changes.
+/// A stopped process loses its claim after this long; active discovery renews it.
 pub const LEASE: Duration = Duration::from_secs(900);
 
 /// How often the app looks for projects that are due and jobs that are ready. The interval
@@ -53,6 +52,7 @@ pub struct Job {
     pub state: JobState,
     pub attempts: i64,
     pub last_error: Option<String>,
+    claimed_by: Option<String>,
     pub available_at: Timestamp,
     pub created_at: Timestamp,
     pub finished_at: Option<Timestamp>,
@@ -99,6 +99,7 @@ impl Job {
     ) -> Result<Option<Job>, DatabaseError> {
         let now = Timestamp::now();
         let expires = now + lease;
+        let claim = format!("{worker}:{}", crate::trace::new_id());
         let row = sqlx::query(
             "UPDATE jobs SET state = 'running', claimed_by = ?, lease_expires_at = ?, \
                     attempts = attempts + 1 \
@@ -106,10 +107,10 @@ impl Job {
                  SELECT id FROM jobs WHERE state = 'queued' AND available_at <= ? \
                  ORDER BY priority DESC, id LIMIT 1 \
              ) \
-             RETURNING id, project_id, kind, state, attempts, last_error, available_at, \
+             RETURNING id, project_id, kind, state, attempts, claimed_by, last_error, available_at, \
                        created_at, finished_at",
         )
-        .bind(worker)
+        .bind(&claim)
         .bind(expires.to_string())
         .bind(now.to_string())
         .fetch_optional(&database.pool)
@@ -141,7 +142,7 @@ impl Job {
         limit: i64,
     ) -> Result<Vec<Job>, DatabaseError> {
         let rows = sqlx::query(
-            "SELECT id, project_id, kind, state, attempts, last_error, available_at, \
+            "SELECT id, project_id, kind, state, attempts, claimed_by, last_error, available_at, \
                     created_at, finished_at \
              FROM jobs WHERE (?1 IS NULL OR project_id = ?1) ORDER BY id DESC LIMIT ?2",
         )
@@ -153,17 +154,41 @@ impl Job {
         rows.iter().map(Job::decode_row).collect()
     }
 
-    pub async fn finish(&self, database: &Database) -> Result<(), DatabaseError> {
-        sqlx::query(
-            "UPDATE jobs SET state = 'done', claimed_by = NULL, lease_expires_at = NULL, \
-                    last_error = NULL, finished_at = ? WHERE id = ?",
+    pub async fn renew(&self, database: &Database, lease: Duration) -> Result<bool, DatabaseError> {
+        let now = Timestamp::now();
+        let updated = sqlx::query(
+            "UPDATE jobs SET lease_expires_at = ? \
+             WHERE id = ? AND state = 'running' AND claimed_by = ? AND attempts = ? \
+                   AND lease_expires_at > ?",
         )
-        .bind(Timestamp::now().to_string())
+        .bind((now + lease).to_string())
         .bind(self.id.raw())
+        .bind(self.claimed_by.as_deref())
+        .bind(self.attempts)
+        .bind(now.to_string())
         .execute(&database.pool)
         .await?;
 
-        Ok(())
+        Ok(updated.rows_affected() == 1)
+    }
+
+    pub async fn finish(&self, database: &Database) -> Result<bool, DatabaseError> {
+        let now = Timestamp::now().to_string();
+        let updated = sqlx::query(
+            "UPDATE jobs SET state = 'done', claimed_by = NULL, lease_expires_at = NULL, \
+                    last_error = NULL, finished_at = ? \
+             WHERE id = ? AND state = 'running' AND claimed_by = ? AND attempts = ? \
+                   AND lease_expires_at > ?",
+        )
+        .bind(&now)
+        .bind(self.id.raw())
+        .bind(self.claimed_by.as_deref())
+        .bind(self.attempts)
+        .bind(&now)
+        .execute(&database.pool)
+        .await?;
+
+        Ok(updated.rows_affected() == 1)
     }
 
     /// A job with a retry time goes back in the queue and keeps its error for the record.
@@ -174,26 +199,31 @@ impl Job {
         database: &Database,
         message: &str,
         retry_at: Option<Timestamp>,
-    ) -> Result<(), DatabaseError> {
+    ) -> Result<bool, DatabaseError> {
         let state = match retry_at {
             Some(_) => JobState::Queued,
             None => JobState::Failed,
         };
 
-        sqlx::query(
+        let now = Timestamp::now().to_string();
+        let updated = sqlx::query(
             "UPDATE jobs SET state = ?, claimed_by = NULL, lease_expires_at = NULL, \
                     last_error = ?, available_at = COALESCE(?, available_at), finished_at = ? \
-             WHERE id = ?",
+             WHERE id = ? AND state = 'running' AND claimed_by = ? AND attempts = ? \
+                   AND lease_expires_at > ?",
         )
         .bind(state.stored())
         .bind(message)
         .bind(retry_at.map(|at| at.to_string()))
-        .bind(retry_at.is_none().then(|| Timestamp::now().to_string()))
+        .bind(retry_at.is_none().then_some(now.as_str()))
         .bind(self.id.raw())
+        .bind(self.claimed_by.as_deref())
+        .bind(self.attempts)
+        .bind(&now)
         .execute(&database.pool)
         .await?;
 
-        Ok(())
+        Ok(updated.rows_affected() == 1)
     }
 
     /// Waiting for a forge's request budget is not a failed attempt: the work was never
@@ -203,19 +233,24 @@ impl Job {
         database: &Database,
         until: Timestamp,
         reason: &str,
-    ) -> Result<(), DatabaseError> {
-        sqlx::query(
+    ) -> Result<bool, DatabaseError> {
+        let now = Timestamp::now().to_string();
+        let updated = sqlx::query(
             "UPDATE jobs SET state = 'queued', claimed_by = NULL, lease_expires_at = NULL, \
                     last_error = ?, available_at = ?, attempts = MAX(attempts - 1, 0) \
-             WHERE id = ?",
+             WHERE id = ? AND state = 'running' AND claimed_by = ? AND attempts = ? \
+                   AND lease_expires_at > ?",
         )
         .bind(reason)
         .bind(until.to_string())
         .bind(self.id.raw())
+        .bind(self.claimed_by.as_deref())
+        .bind(self.attempts)
+        .bind(&now)
         .execute(&database.pool)
         .await?;
 
-        Ok(())
+        Ok(updated.rows_affected() == 1)
     }
 }
 
@@ -228,6 +263,7 @@ impl DecodeRow for Job {
             state: JobState::read(row, "state")?,
             attempts: row.try_get("attempts")?,
             last_error: row.try_get("last_error")?,
+            claimed_by: row.try_get("claimed_by")?,
             available_at: Timestamp::read(row, "available_at")?,
             created_at: Timestamp::read(row, "created_at")?,
             finished_at: row
@@ -359,40 +395,7 @@ async fn run(state: &AppState, job: Job) -> Result<(), DatabaseError> {
     let started = Timestamp::now();
 
     match job.kind {
-        JobKind::Discover => match discovery::run(state, job.project_id).await {
-            Ok(discovery) => {
-                job.finish(&state.database).await?;
-                tracing::info!(
-                    changes = discovery.changes.len(),
-                    seconds = started.duration_until(Timestamp::now()).as_secs(),
-                    "discovery finished"
-                );
-            }
-            Err(error) => match error.rate_limited() {
-                Some((host, reset)) => {
-                    let message = format!("{host} has no request budget left until {reset}");
-                    job.defer(&state.database, reset, &message).await?;
-                    tracing::warn!(
-                        %host,
-                        %reset,
-                        "discovery is waiting for the forge request budget"
-                    );
-                }
-                None => {
-                    let message = error.to_string();
-                    let retry_at = (job.attempts < MAX_ATTEMPTS).then(|| {
-                        Timestamp::now() + Duration::from_secs(backoff_seconds(job.attempts))
-                    });
-
-                    job.fail(&state.database, &message, retry_at).await?;
-                    tracing::warn!(
-                        attempts = job.attempts,
-                        retrying = retry_at.is_some(),
-                        "discovery failed: {message}"
-                    );
-                }
-            },
-        },
+        JobKind::Discover => discover(state, &job, started).await?,
         JobKind::PackageFacts => match registry::fill(state, job.project_id).await {
             Ok(registry::Fill::Failed { reads, retry_at }) => {
                 // A registry that is down or refusing is a failed attempt, and the snapshot
@@ -438,6 +441,228 @@ async fn run(state: &AppState, job: Job) -> Result<(), DatabaseError> {
     Ok(())
 }
 
+async fn discover(state: &AppState, job: &Job, started: Timestamp) -> Result<(), DatabaseError> {
+    let mut renewal = tokio::time::interval(LEASE / 3);
+    renewal.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let discovery = discovery::run(state, job.project_id);
+    tokio::pin!(discovery);
+
+    let result = loop {
+        tokio::select! {
+            result = &mut discovery => break result,
+            _ = renewal.tick() => {
+                if !job.renew(&state.database, LEASE).await? {
+                    tracing::warn!("discovery stopped after losing its lease");
+                    return Ok(());
+                }
+            }
+        }
+    };
+
+    match result {
+        Ok(discovery) => {
+            if job.finish(&state.database).await? {
+                tracing::info!(
+                    changes = discovery.changes.len(),
+                    seconds = started.duration_until(Timestamp::now()).as_secs(),
+                    "discovery finished"
+                );
+            } else {
+                tracing::warn!("discovery completed after losing its lease");
+            }
+        }
+        Err(error) => match error.rate_limited() {
+            Some((host, reset)) => {
+                let message = format!("{host} has no request budget left until {reset}");
+                if job.defer(&state.database, reset, &message).await? {
+                    tracing::warn!(
+                        %host,
+                        %reset,
+                        "discovery is waiting for the forge request budget"
+                    );
+                } else {
+                    tracing::warn!("discovery lost its lease before deferral");
+                }
+            }
+            None => {
+                let message = error.to_string();
+                let retry_at = (job.attempts < MAX_ATTEMPTS)
+                    .then(|| Timestamp::now() + Duration::from_secs(backoff_seconds(job.attempts)));
+
+                if job.fail(&state.database, &message, retry_at).await? {
+                    tracing::warn!(
+                        attempts = job.attempts,
+                        retrying = retry_at.is_some(),
+                        "discovery failed: {message}"
+                    );
+                } else {
+                    tracing::warn!("discovery lost its lease before failure was recorded");
+                }
+            }
+        },
+    }
+
+    Ok(())
+}
+
 fn backoff_seconds(attempts: i64) -> u64 {
     (RETRY_BACKOFF_SECONDS * attempts.max(1)) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn queued_job() -> Database {
+        let database = Database::open("sqlite::memory:", 0).await.expect("opens");
+        let project_id: Id<Project> = database.ids.next();
+        sqlx::query(
+            "INSERT INTO projects (id, name, remote_url, forge_kind, uses_default_analyzers) \
+             VALUES (?, 'lease-test', 'https://github.com/owner/repo', 'auto', 1)",
+        )
+        .bind(project_id.raw())
+        .execute(&database.pool)
+        .await
+        .expect("inserts project");
+        Job::enqueue(&database, project_id, JobKind::Discover)
+            .await
+            .expect("enqueues");
+        database
+    }
+
+    async fn expire(database: &Database, job: &Job) {
+        sqlx::query("UPDATE jobs SET lease_expires_at = ? WHERE id = ?")
+            .bind((Timestamp::now() - Duration::from_secs(1)).to_string())
+            .bind(job.id.raw())
+            .execute(&database.pool)
+            .await
+            .expect("expires lease");
+    }
+
+    #[tokio::test]
+    async fn expired_claim_cannot_change_reclaimed_job() {
+        let database = queued_job().await;
+        let first = Job::claim(&database, "worker-a", LEASE)
+            .await
+            .expect("claims")
+            .expect("job");
+        expire(&database, &first).await;
+        assert_eq!(
+            Job::reclaim_expired_leases(&database)
+                .await
+                .expect("reclaims"),
+            1
+        );
+        let second = Job::claim(&database, "worker-b", LEASE)
+            .await
+            .expect("claims again")
+            .expect("job");
+        assert!(!first.renew(&database, LEASE).await.expect("checks renewal"));
+        assert!(!first.finish(&database).await.expect("checks finish"));
+        assert!(
+            !first
+                .fail(&database, "stale failure", None)
+                .await
+                .expect("checks failure")
+        );
+        assert!(
+            !first
+                .defer(&database, Timestamp::now(), "stale deferral")
+                .await
+                .expect("checks deferral")
+        );
+        let running = Job::recent(&database, Some(first.project_id), 1)
+            .await
+            .expect("reads current claim");
+        assert_eq!(running[0].state, JobState::Running);
+        assert_eq!(running[0].attempts, second.attempts);
+        assert_eq!(running[0].last_error.as_deref(), Some("lease expired"));
+        expire(&database, &second).await;
+        assert_eq!(
+            Job::reclaim_expired_leases(&database)
+                .await
+                .expect("reclaims again"),
+            1
+        );
+        let third = Job::claim(&database, "worker-a", LEASE)
+            .await
+            .expect("claims third time")
+            .expect("job");
+        assert!(!first.finish(&database).await.expect("checks oldest claim"));
+        assert!(
+            !second
+                .fail(&database, "stale failure", None)
+                .await
+                .expect("checks second claim")
+        );
+        assert!(
+            third
+                .finish(&database)
+                .await
+                .expect("finishes current claim")
+        );
+    }
+
+    #[tokio::test]
+    async fn deferred_claim_cannot_change_next_claim_with_same_attempt_number() {
+        let database = queued_job().await;
+        let first = Job::claim(&database, "worker", LEASE)
+            .await
+            .expect("claims")
+            .expect("job");
+        assert!(
+            first
+                .defer(&database, Timestamp::now(), "budget exhausted")
+                .await
+                .expect("defers")
+        );
+        let second = Job::claim(&database, "worker", LEASE)
+            .await
+            .expect("claims again")
+            .expect("job");
+        assert_eq!(first.attempts, second.attempts);
+        assert!(!first.finish(&database).await.expect("checks stale finish"));
+        assert!(
+            !first
+                .fail(&database, "stale", None)
+                .await
+                .expect("checks stale failure")
+        );
+        assert!(
+            !first
+                .defer(&database, Timestamp::now(), "stale")
+                .await
+                .expect("checks stale deferral")
+        );
+        assert!(
+            second
+                .renew(&database, LEASE)
+                .await
+                .expect("renews current claim")
+        );
+        assert!(
+            second
+                .finish(&database)
+                .await
+                .expect("finishes current claim")
+        );
+    }
+
+    #[tokio::test]
+    async fn renewal_keeps_honest_work_claimed() {
+        let database = queued_job().await;
+        let job = Job::claim(&database, "worker", Duration::from_secs(1))
+            .await
+            .expect("claims")
+            .expect("job");
+        assert!(job.renew(&database, LEASE).await.expect("renews"));
+        assert_eq!(
+            Job::reclaim_expired_leases(&database)
+                .await
+                .expect("checks expiry"),
+            0
+        );
+        assert!(job.finish(&database).await.expect("finishes"));
+        assert!(!job.renew(&database, LEASE).await.expect("renewal stopped"));
+    }
 }

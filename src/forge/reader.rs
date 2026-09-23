@@ -33,6 +33,8 @@ pub enum ForgeReadError {
     Unauthorised { host: String, status: u16 },
     #[error("{host} has no request budget left until {reset}")]
     RateLimited { host: String, reset: Timestamp },
+    #[error("forge destination is not public: {0}")]
+    Destination(#[from] std::io::Error),
     #[error("requesting forge data: {0}")]
     Request(#[from] reqwest::Error),
     #[error("reading forge data: {0}")]
@@ -129,6 +131,7 @@ impl Api<'_> {
         &self,
         url: reqwest::Url,
     ) -> Result<Value, ForgeReadError> {
+        crate::outbound::validate_url(&url)?;
         let host = url.host_str().unwrap_or_default().to_owned();
         let response = self
             .reader
@@ -176,6 +179,8 @@ impl ForgeReader {
         Ok(Self {
             client: reqwest::Client::builder()
                 .https_only(true)
+                .no_proxy()
+                .dns_resolver(Arc::new(crate::outbound::PublicResolver))
                 .redirect(reqwest::redirect::Policy::custom(|attempt| {
                     if attempt.previous().len() > MAX_FORGE_REDIRECTS
                         || crate::outbound::validate_url(attempt.url()).is_err()
@@ -187,6 +192,7 @@ impl ForgeReader {
                     attempt.follow()
                 }))
                 .referer(false)
+                .connect_timeout(std::time::Duration::from_secs(10))
                 .timeout(std::time::Duration::from_secs(15))
                 .user_agent(concat!("error.menu/", env!("CARGO_PKG_VERSION")))
                 .build()?,
@@ -522,6 +528,27 @@ mod tests {
             refused,
             ForgeReadError::Unauthorised { status: 403, .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn forge_request_rejects_private_literal_before_connecting() {
+        let reader = ForgeReader {
+            client: crate::outbound::client().unwrap(),
+            credentials: BTreeMap::new(),
+            github_app: None,
+        };
+        let api = reader
+            .api(
+                &RemoteUrl::new("https://github.com/owner/repo").unwrap(),
+                ForgeKind::Github,
+                None,
+            )
+            .await
+            .unwrap();
+        let result = api
+            .get::<serde_json::Value>(reqwest::Url::parse("https://127.0.0.1/secret").unwrap())
+            .await;
+        assert!(matches!(result, Err(ForgeReadError::Destination(_))));
     }
 
     #[test]

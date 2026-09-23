@@ -12,7 +12,9 @@ or workflow commands.
 ## Implemented analyzers
 
 `lockfile-delta` compares supported lockfiles. It reports package additions, removals, version
-moves, changed sources, and changed integrity data.
+moves, changed sources, and changed integrity data. A flake input is named by its repository
+(`github:NixOS/nixpkgs`, with `?host=` for a forge other than the public one), so an input that
+moves to a new revision in a different repository is a changed source, not a version move.
 
 `manifest-delta` compares `Cargo.toml` and `package.json` dependency declarations.
 
