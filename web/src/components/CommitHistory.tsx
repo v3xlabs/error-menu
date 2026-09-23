@@ -3,28 +3,10 @@ import { For, Show } from "solid-js";
 
 import type { Analysis, Commit } from "../api/projects";
 import { analysisTone, runTone, scanPath } from "../domain/analysis";
+import { sinceNow } from "../domain/time";
 import type { AnalyzerRingEntry } from "./AnalyzerRing";
 import { AnalyzerRing } from "./AnalyzerRing";
 import { StatusDot } from "./StatusDot";
-
-const RELATIVE = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
-
-const UNITS: readonly (readonly [Intl.RelativeTimeFormatUnit, number])[] = [
-  ["year", 365 * 24 * 60 * 60 * 1000],
-  ["month", 30 * 24 * 60 * 60 * 1000],
-  ["day", 24 * 60 * 60 * 1000],
-  ["hour", 60 * 60 * 1000],
-  ["minute", 60 * 1000],
-];
-
-const sinceNow = (iso: string): string => {
-  const elapsedMs = new Date(iso).getTime() - Date.now();
-  const unit = UNITS.find(([, sizeMs]) => Math.abs(elapsedMs) >= sizeMs);
-
-  if (unit === undefined) return RELATIVE.format(0, "second");
-
-  return RELATIVE.format(Math.round(elapsedMs / unit[1]), unit[0]);
-};
 
 const ringEntries = (analysis: Analysis): readonly AnalyzerRingEntry[] =>
   analysis.analyzers.map(run => ({
@@ -34,12 +16,8 @@ const ringEntries = (analysis: Analysis): readonly AnalyzerRingEntry[] =>
   }));
 
 const CommitRow = (properties: { commit: Commit; scan: Analysis | undefined; projectId: string; }) => (
-  <li class="group relative flex gap-3">
-    <span
-      aria-hidden="true"
-      class="absolute top-4 bottom-0 left-[4.5px] w-px bg-hairline group-last:hidden"
-    />
-    <span class="relative mt-1.5 shrink-0">
+  <li class="flex gap-3 border-b border-hairline py-3">
+    <span class="mt-1.5 shrink-0">
       <Show
         when={properties.scan}
         fallback={<span class="block size-2.5 rounded-full border border-slate-400 dark:border-slate-600" />}
@@ -47,7 +25,7 @@ const CommitRow = (properties: { commit: Commit; scan: Analysis | undefined; pro
         {scan => <StatusDot tone={analysisTone(scan())} />}
       </Show>
     </span>
-    <span class="min-w-0 flex-1 pb-3 group-last:pb-0">
+    <span class="min-w-0 flex-1">
       <Show
         when={properties.scan}
         fallback={<span class="block truncate text-sm text-slate-700 dark:text-slate-300">{properties.commit.summary}</span>}
@@ -77,7 +55,7 @@ const CommitRow = (properties: { commit: Commit; scan: Analysis | undefined; pro
     </span>
     <Show when={properties.scan}>
       {scan => (
-        <span class="shrink-0 pb-3 group-last:pb-0">
+        <span class="shrink-0">
           <AnalyzerRing entries={ringEntries(scan())} size={28} />
         </span>
       )}
@@ -96,7 +74,7 @@ export const CommitHistory = (properties: {
     properties.analyses.find(analysis => analysis.head_sha === sha);
 
   return (
-    <ol class="space-y-0 rounded-panel bg-surface p-5">
+    <ol>
       <For
         each={properties.commits}
         fallback={<li class="text-sm text-slate-500 dark:text-slate-500">No commit is readable yet.</li>}

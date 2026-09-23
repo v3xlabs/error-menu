@@ -192,6 +192,7 @@ pub async fn run_target_in_mirror(
         target.forge,
     )
     .await?;
+    state.activity.observe(project.id, &snapshot);
     if let Some(CheckRunInput::Ready(check_runs)) = check_runs.as_ref() {
         ci_checks::CheckRun::replace(&state.database, snapshot.id, check_runs).await?;
     }

@@ -112,13 +112,6 @@ export const ProjectDashboard = (properties: ProjectDashboardProperties) => {
           <p class="mt-1 truncate font-mono text-sm text-slate-500 dark:text-slate-400">
             {defaultBranchName() ?? "Not discovered yet"}
           </p>
-          <Show when={properties.commits[0]}>
-            {head => (
-              <p class="mt-0.5 truncate text-sm text-slate-700 dark:text-slate-300" title={head().summary}>
-                {head().summary}
-              </p>
-            )}
-          </Show>
         </div>
         <div class="p-5">
           <p class="text-xs font-medium tracking-wide text-slate-500 uppercase dark:text-slate-400">Open pull requests</p>

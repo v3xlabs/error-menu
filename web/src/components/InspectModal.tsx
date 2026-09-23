@@ -1,4 +1,5 @@
 import { Dialog } from "@kobalte/core/dialog";
+import { FiSearch } from "solid-icons/fi";
 import { createSignal, Show } from "solid-js";
 
 import { runAnalysis, scanChange } from "../api/projects";
@@ -72,8 +73,12 @@ export const InspectModal = (properties: { projectId: string; onAnalysed: () => 
 
   return (
     <Dialog open={isOpen()} onOpenChange={setIsOpen}>
-      <Dialog.Trigger class="rounded-control bg-raised px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-raised-hover dark:text-slate-300">
-        Inspect
+      <Dialog.Trigger
+        aria-label="Inspect a revision"
+        title="Inspect a revision"
+        class="rounded-control bg-raised p-2 text-slate-600 hover:bg-raised-hover dark:text-slate-300"
+      >
+        <FiSearch size={16} />
       </Dialog.Trigger>
       <Dialog.Portal>
         <Dialog.Overlay class="fixed inset-0 z-40 bg-slate-950/40" />

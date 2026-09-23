@@ -8,18 +8,18 @@ import type { Severity, SeverityCounts } from "../domain/severity";
 import { SEVERITY_ORDER } from "../domain/severity";
 
 export const MOVEMENT_TEXT: Record<DependencyMovement, string> = {
-  upgraded: "text-emerald-700 dark:text-emerald-400",
+  upgraded: "text-sky-700 dark:text-sky-400",
   downgraded: "text-amber-700 dark:text-amber-400",
-  added: "text-sky-700 dark:text-sky-400",
-  removed: "text-slate-500 dark:text-slate-400",
+  added: "text-emerald-700 dark:text-emerald-400",
+  removed: "text-red-700 dark:text-red-400",
   changed: "text-slate-600 dark:text-slate-300",
 };
 
 const MOVEMENT_FILL: Record<DependencyMovement, string> = {
-  upgraded: "bg-emerald-500",
+  upgraded: "bg-sky-500",
   downgraded: "bg-amber-500",
-  added: "bg-sky-500",
-  removed: "bg-slate-400",
+  added: "bg-emerald-500",
+  removed: "bg-red-500",
   changed: "bg-slate-300 dark:bg-slate-600",
 };
 

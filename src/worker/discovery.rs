@@ -90,6 +90,7 @@ pub async fn run(state: &AppState, project_id: Id<Project>) -> Result<Discovery,
                 Some(&indexed),
             )
             .await?;
+            state.activity.observe(project.id, &snapshot);
             Analysis::for_snapshot(&state.database, snapshot).await?
         }
         None => {
@@ -196,6 +197,7 @@ async fn read_change(
         indexed.as_ref(),
     )
     .await?;
+    state.activity.observe(project.id, &snapshot);
 
     Ok(ChangeAnalysis {
         number: change.number,
