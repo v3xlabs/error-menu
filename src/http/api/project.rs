@@ -39,12 +39,14 @@ impl ProjectApi {
         let projects = summaries
             .into_iter()
             .map(|summary| {
+                let last_activity_at = self.state.activity.latest(summary.project.id);
                 build_project_output(
                     summary.project,
                     summary.organization_name,
                     summary.viewer_role,
                     summary.analyzers,
                     summary.default_branch.map(branch_output),
+                    last_activity_at,
                 )
             })
             .collect::<Result<Vec<_>, _>>();
@@ -250,6 +252,49 @@ impl ProjectApi {
             .describe(&self.state.database, description.as_deref(), &project.icon)
             .await
         {
+            return GetProjectResponse::Failed(Json(Error {
+                message: error.to_string(),
+            }));
+        }
+
+        project_response(&self.state.database, project_id, ProjectRole::Owner).await
+    }
+
+    #[oai(path = "/projects/:project_id/name", method = "put")]
+    async fn rename_project(
+        &self,
+        CurrentUser(user): CurrentUser,
+        project_id: Path<String>,
+        input: Json<RenameProject>,
+    ) -> GetProjectResponse {
+        let project_id = match project_id.0.parse::<Id<Project>>() {
+            Ok(project_id) => project_id,
+            Err(error) => {
+                return GetProjectResponse::Invalid(Json(Error {
+                    message: error.to_string(),
+                }));
+            }
+        };
+        let name = input.0.name.trim().to_owned();
+        if name.is_empty() {
+            return GetProjectResponse::Invalid(Json(Error {
+                message: "project name is empty".to_owned(),
+            }));
+        }
+        let project =
+            match project_access(&self.state, &user, project_id, ProjectPermission::Owner).await {
+                ProjectAccess::Allowed { project, .. } => project,
+                ProjectAccess::Forbidden => {
+                    return GetProjectResponse::Forbidden(Json(forbidden()));
+                }
+                ProjectAccess::Missing => {
+                    return GetProjectResponse::Missing(Json(missing_project()));
+                }
+                ProjectAccess::Failed(message) => {
+                    return GetProjectResponse::Failed(Json(Error { message }));
+                }
+            };
+        if let Err(error) = project.rename(&self.state.database, &name).await {
             return GetProjectResponse::Failed(Json(Error {
                 message: error.to_string(),
             }));
@@ -548,6 +593,9 @@ pub struct ProjectOutput {
     /// How the default branch last scanned. Only the project list reports it, because it
     /// is the one view that shows many projects without opening any of them.
     default_branch: Option<ProjectBranchOutput>,
+    /// When a branch or change last moved to a head it had not held before. Only the
+    /// project list reports it, for the same reason as the default branch.
+    last_activity_at: Option<String>,
 }
 
 #[derive(Debug, Object)]
@@ -585,6 +633,11 @@ struct ProjectsOutput {
 #[oai(skip_serializing_if_is_none)]
 struct DescribeProject {
     description: Option<String>,
+}
+
+#[derive(Debug, Object)]
+struct RenameProject {
+    name: String,
 }
 
 #[allow(dead_code)]
@@ -712,7 +765,14 @@ async fn project_output(
         })?;
     let analyzers = project.effective_analyzers(database).await?;
 
-    build_project_output(project, organization.name, viewer_role, analyzers, None)
+    build_project_output(
+        project,
+        organization.name,
+        viewer_role,
+        analyzers,
+        None,
+        None,
+    )
 }
 
 fn build_project_output(
@@ -721,6 +781,7 @@ fn build_project_output(
     viewer_role: ProjectRole,
     analyzers: Vec<String>,
     default_branch: Option<ProjectBranchOutput>,
+    last_activity_at: Option<jiff::Timestamp>,
 ) -> Result<ProjectOutput, DatabaseError> {
     let analyzers = analyzers
         .into_iter()
@@ -761,6 +822,7 @@ fn build_project_output(
             .as_ref()
             .map(|path| path.as_str().to_owned()),
         default_branch,
+        last_activity_at: last_activity_at.map(|at| at.to_string()),
     })
 }
 

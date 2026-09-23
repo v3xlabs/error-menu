@@ -10,6 +10,7 @@ use error_menu::app::AppState;
 use error_menu::database::Database;
 use error_menu::forge::reader::ForgeReader;
 use error_menu::http::oauth::GithubAuth;
+use error_menu::project::activity::ProjectActivity;
 
 const DEFAULT_PORT: u16 = 3000;
 const DEFAULT_DATABASE_URL: &str = "sqlite:error-menu.db";
@@ -43,7 +44,10 @@ async fn main() -> Result<(), std::io::Error> {
         .await
         .map_err(std::io::Error::other)?;
     let forge = ForgeReader::new().map_err(std::io::Error::other)?;
-    let state = Arc::new(AppState::new(database, forge, &data_root));
+    let activity = ProjectActivity::load(&database)
+        .await
+        .map_err(std::io::Error::other)?;
+    let state = Arc::new(AppState::new(database, forge, activity, &data_root));
     let github_auth =
         GithubAuth::from_environment(Arc::clone(&state)).map_err(std::io::Error::other)?;
     tracing::info!(%address, "error.menu is listening");

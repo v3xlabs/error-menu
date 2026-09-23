@@ -38,3 +38,14 @@ export const FindingLine = (properties: { finding: Finding; showLocation?: boole
     </Show>
   </li>
 );
+
+// Name and version read as columns down a file; the sentence stays for screen readers and on
+// hover, since an upgrade names its old version only there.
+export const PackageLine = (properties: { finding: Finding; name: string; version: string; }) => (
+  <li class={["grid grid-cols-[12px_minmax(0,1fr)_auto] items-baseline gap-2.5 font-mono text-xs", style(properties.finding)]} title={properties.finding.detail}>
+    <span aria-hidden="true">{icon(properties.finding)}</span>
+    <span aria-hidden="true" class="truncate">{properties.name}</span>
+    <span aria-hidden="true" class="tabular-nums opacity-80">{properties.version}</span>
+    <span class="sr-only">{properties.finding.detail}</span>
+  </li>
+);

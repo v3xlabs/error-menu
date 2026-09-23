@@ -1,4 +1,5 @@
-import { createMemo, createSignal, For, Show } from "solid-js";
+import { FiChevronRight } from "solid-icons/fi";
+import { createMemo, createSignal, For, Show, untrack } from "solid-js";
 
 import type { AnalyzerRun, PackageFinding } from "../domain/analysis";
 import { runTone } from "../domain/analysis";
@@ -10,12 +11,13 @@ import { signalFromOutput } from "../domain/signal";
 import type { CountSlot } from "./Counts";
 import { CountBar, CountRow, movementSlots, severitySlots } from "./Counts";
 import { FileIcon } from "./FileIcon";
-import { FindingLine } from "./FindingLine";
+import { FindingLine, PackageLine } from "./FindingLine";
 import { Gauge } from "./Gauge";
 import { SignalBadge } from "./SignalBadge";
 
-// A file with more findings than this is read by opening it, not by scrolling past it.
-const SHOWN_FINDINGS = 10;
+// A file with more findings than this starts closed, so a lockfile with thousands of entries
+// is not rendered until someone opens it.
+const OPEN_LIMIT = 100;
 
 type RunFile = {
   path: string;
@@ -30,44 +32,37 @@ type RunFile = {
 type Breakdown = { files: readonly RunFile[]; totals: readonly CountSlot[]; };
 
 const FileRow = (properties: { file: RunFile; }) => {
-  const [isOpen, setIsOpen] = createSignal(false);
-  const shown = (): readonly PackageFinding[] =>
-    (isOpen() ? properties.file.findings : properties.file.findings.slice(0, SHOWN_FINDINGS));
-  const hidden = (): number | undefined => {
-    const remaining = properties.file.findings.length - SHOWN_FINDINGS;
-
-    return remaining > 0 ? remaining : undefined;
-  };
+  const [isOpen, setIsOpen] = createSignal(untrack(() => properties.file.findings.length <= OPEN_LIMIT));
 
   return (
     <li>
-      <div class="flex items-center gap-3 px-3 py-2">
-        <span class="flex shrink-0">
-          <FileIcon kind={properties.file.kind} size={15} />
-        </span>
-        <span class="min-w-0 flex-1 truncate font-mono text-xs">
-          <span class="text-slate-400 dark:text-slate-500">{properties.file.directory}</span>
-          <span class="text-slate-900 dark:text-slate-100">{properties.file.name}</span>
-        </span>
-        <CountRow slots={properties.file.slots} />
-        <CountBar slots={properties.file.slots} total={properties.file.total} />
-      </div>
-      <ul class="space-y-0.5 px-3 pb-2.5 pl-9">
-        <For each={shown()}>{finding => <FindingLine finding={finding} />}</For>
-        <Show when={hidden()}>
-          {count => (
-            <li>
-              <button
-                type="button"
-                onClick={() => setIsOpen(!isOpen())}
-                class="text-xs text-slate-500 underline hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
-              >
-                {isOpen() ? "Show fewer" : `Show ${count()} more`}
-              </button>
-            </li>
-          )}
+      <details open={isOpen()} onToggle={event => setIsOpen(event.currentTarget.open)}>
+        <summary class="flex cursor-pointer list-none items-center gap-3 px-3 py-2 hover:bg-raised [&::-webkit-details-marker]:hidden">
+          <span class={["flex shrink-0 text-slate-400 transition-transform dark:text-slate-500", { "rotate-90": isOpen() }]}>
+            <FiChevronRight size={14} />
+          </span>
+          <span class="flex shrink-0">
+            <FileIcon kind={properties.file.kind} size={15} />
+          </span>
+          <span class="min-w-0 flex-1 truncate font-mono text-xs">
+            <span class="text-slate-400 dark:text-slate-500">{properties.file.directory}</span>
+            <span class="text-slate-900 dark:text-slate-100">{properties.file.name}</span>
+          </span>
+          <CountRow slots={properties.file.slots} />
+          <CountBar slots={properties.file.slots} total={properties.file.total} />
+        </summary>
+        <Show when={isOpen()}>
+          <ul class="space-y-0.5 px-3 pb-2.5 pl-14">
+            <For each={properties.file.findings}>
+              {finding => (
+                <Show when={finding.package} fallback={<FindingLine finding={finding} />}>
+                  {known => <PackageLine finding={finding} name={known().name} version={known().version} />}
+                </Show>
+              )}
+            </For>
+          </ul>
         </Show>
-      </ul>
+      </details>
     </li>
   );
 };

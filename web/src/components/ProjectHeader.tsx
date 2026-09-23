@@ -36,14 +36,7 @@ export const ProjectHeader = (properties: {
             </a>
           </div>
           <p class="truncate text-sm text-slate-500 dark:text-slate-500">{properties.project.remote_url}</p>
-          <Show
-            when={properties.project.description}
-            fallback={(
-              <p class="mt-2 text-sm text-slate-400 italic dark:text-slate-500">
-                No description yet. A reviewing model will keep one here.
-              </p>
-            )}
-          >
+          <Show when={properties.project.description}>
             {description => <p class="mt-2 text-sm text-slate-600 dark:text-slate-300">{description()}</p>}
           </Show>
         </div>
@@ -65,7 +58,7 @@ export const ProjectHeader = (properties: {
             <ProjectSettingsModal project={properties.project} onSaved={() => properties.onSaved()} />
           </Show>
         </div>
-        <QueueStateBadge state={properties.queue} />
+        <QueueStateBadge state={properties.queue} time="relative" />
       </div>
     </header>
   );

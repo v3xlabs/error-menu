@@ -264,6 +264,27 @@ export const describeProject = async (projectId: string, description: string | n
   }
 };
 
+export const renameProject = async (projectId: string, name: string): Promise<Result<Project>> => {
+  const response = await api("/projects/{project_id}/name", "put", {
+    path: { project_id: projectId },
+    contentType: "application/json; charset=utf-8",
+    data: { name },
+  });
+
+  if (response.status === 200) return { ok: true, value: response.data };
+
+  switch (response.status) {
+    case 400:
+    case 404:
+    case 500: {
+      return { ok: false, message: response.data.message };
+    }
+    default: {
+      return failed(response.status);
+    }
+  }
+};
+
 export const setProjectAnalyzers = async (
   projectId: string,
   analyzers: SetProjectAnalyzers,

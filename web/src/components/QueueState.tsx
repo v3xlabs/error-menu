@@ -3,6 +3,7 @@ import { VsError, VsHistory, VsSync, VsWatch } from "solid-icons/vs";
 import { Match, Switch } from "solid-js";
 
 import type { QueueState } from "../domain/job";
+import { sinceNow } from "../domain/time";
 import { TONE_TINT } from "./Gauge";
 
 const PILL = "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium";
@@ -13,7 +14,7 @@ const QUEUED = `${PILL} ${TONE_TINT.unscanned}`;
 const FAILED = `${PILL} ${TONE_TINT.alarming}`;
 const DONE = "inline-flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400";
 
-export const QueueStateBadge = (properties: { state: QueueState; }) => (
+export const QueueStateBadge = (properties: { state: QueueState; time: "relative" | "clock"; }) => (
   <Switch>
     <Match when={properties.state.phase === "running"}>
       <span class={RUNNING}>
@@ -73,7 +74,11 @@ export const QueueStateBadge = (properties: { state: QueueState; }) => (
       {done => (
         <span class={DONE}>
           <VsWatch size={12} />
-          {`Scanned ${new Date(done().at).toLocaleString()}`}
+          <time datetime={done().at} title={new Date(done().at).toLocaleString()}>
+            {properties.time === "relative"
+              ? `Scanned ${sinceNow(done().at)}`
+              : new Date(done().at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+          </time>
         </span>
       )}
     </Match>

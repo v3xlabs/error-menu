@@ -1,6 +1,6 @@
 import { useParams, useSearchParams } from "@solidjs/router";
 import type { JSX } from "@solidjs/web";
-import { FiArrowLeft, FiExternalLink } from "solid-icons/fi";
+import { FiArrowLeft, FiCheck, FiExternalLink } from "solid-icons/fi";
 import { createEffect, createSignal, For, Show } from "solid-js";
 
 import type { Analysis } from "../api/projects";
@@ -10,6 +10,7 @@ import { AnalyzerCard } from "../components/AnalyzerCard";
 import { ChangeStateBadge } from "../components/ChangeStateBadge";
 import { PersonAvatar } from "../components/PersonAvatar";
 import { StatusDot, toneLabel } from "../components/StatusDot";
+import type { AnalyzerRun } from "../domain/analysis";
 import {
   analysisTone,
   distinctPeople,
@@ -18,9 +19,18 @@ import {
   mergedChangeFor,
   roleLabel,
   rolesOf,
+  runTone,
   scanPath,
   subjectLabel,
 } from "../domain/analysis";
+import { analyzerByRunId } from "../domain/analyzer";
+
+// Analyzers that ran clean and have nothing to show share one row. Set to false to give each
+// its own card again.
+const IS_COLLAPSE_QUIET_ANALYZERS = true;
+
+const isQuiet = (run: AnalyzerRun): boolean =>
+  runTone(run) === "clear" && run.finding_count === 0 && run.signals.length === 0 && run.detail === undefined;
 
 type RunState = { phase: "ready"; } | { phase: "running"; } | { phase: "error"; message: string; };
 type HistoryState = { phase: "loading"; } | { phase: "loaded"; analyses: readonly Analysis[]; } | { phase: "error"; message: string; };
@@ -114,69 +124,72 @@ export const SubjectPage = () => {
     const failedCheckRuns = analysis.check_runs.filter(
       check => check.status === "completed" && check.conclusion === "failure",
     );
+    const quietRuns = IS_COLLAPSE_QUIET_ANALYZERS ? analysis.analyzers.filter(isQuiet) : [];
+    const shownRuns = analysis.analyzers.filter(run => !quietRuns.includes(run));
 
     return (
       <div class="space-y-6">
-        <div>
-          <a href={`/projects/${routeParameters.projectId}`} class="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-300">
-            <FiArrowLeft size={12} />
-            Back to project
-          </a>
-          <h1 class="mt-1 flex flex-wrap items-center gap-2 text-lg font-semibold">
-            <ChangeStateBadge state={analysis.forge.state} />
-            <Show when={analysis.forge.url} fallback={subjectLabel(analysis.subject)}>
-              {url => (
-                <a
-                  href={url()}
-                  target="_blank"
-                  rel="noreferrer"
-                  class="inline-flex items-center gap-1 hover:underline"
-                >
-                  {subjectLabel(analysis.subject)}
-                  <span class="text-slate-400 dark:text-slate-500"><FiExternalLink size={12} /></span>
-                </a>
-              )}
-            </Show>
-            <Show when={analysis.forge.title}>
-              {title => <span class="font-normal text-slate-600 dark:text-slate-300">{title()}</span>}
-            </Show>
-          </h1>
-          <p class="mt-1 flex flex-wrap items-center gap-2 text-sm text-slate-500 dark:text-slate-500">
-            <span>{toneLabel(analysisTone(analysis))}</span>
-            <span class="font-mono text-xs">{analysis.head_sha.slice(0, 7)}</span>
-            <Show when={analysis.forge.head_ref}>
-              {headReference => (
-                <span>
-                  {headReference()}
-                  <Show when={analysis.forge.base_ref}>
-                    {baseReference => <>{` into ${baseReference()}`}</>}
-                  </Show>
-                </span>
-              )}
-            </Show>
-          </p>
-        </div>
-
-        <Show when={mergedBy()}>
-          {change => (
-            <p class="flex flex-wrap items-center gap-2 rounded-control bg-violet-50 px-4 py-2.5 text-sm text-violet-900 dark:bg-violet-950/40 dark:text-violet-200">
-              Merged by
-              <ChangeStateBadge state={change().forge.state} />
-              <a href={scanPath(routeParameters.projectId, change())} class="font-medium underline">
-                {subjectLabel(change().subject)}
-                <Show when={change().forge.title}>
-                  {title => (
-                    <>
-                      {" "}
-                      {title()}
-                    </>
-                  )}
-                </Show>
-              </a>
+        <div class="flex flex-wrap items-start justify-between gap-4">
+          <div class="min-w-0 flex-1">
+            <a href={`/projects/${routeParameters.projectId}`} class="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-300">
+              <FiArrowLeft size={12} />
+              Back to project
+            </a>
+            <h1 class="mt-1 flex flex-wrap items-center gap-2 text-lg font-semibold">
+              <ChangeStateBadge state={analysis.forge.state} />
+              <Show when={analysis.forge.url} fallback={subjectLabel(analysis.subject)}>
+                {url => (
+                  <a
+                    href={url()}
+                    target="_blank"
+                    rel="noreferrer"
+                    class="inline-flex items-center gap-1 hover:underline"
+                  >
+                    {subjectLabel(analysis.subject)}
+                    <span class="text-slate-400 dark:text-slate-500"><FiExternalLink size={12} /></span>
+                  </a>
+                )}
+              </Show>
+              <Show when={analysis.forge.title}>
+                {title => <span class="font-normal text-slate-600 dark:text-slate-300">{title()}</span>}
+              </Show>
+            </h1>
+            <p class="mt-1 flex flex-wrap items-center gap-2 text-sm text-slate-500 dark:text-slate-500">
+              <span>{toneLabel(analysisTone(analysis))}</span>
+              <span class="font-mono text-xs">{analysis.head_sha.slice(0, 7)}</span>
+              <Show when={analysis.forge.head_ref}>
+                {headReference => (
+                  <span>
+                    {headReference()}
+                    <Show when={analysis.forge.base_ref}>
+                      {baseReference => <>{` into ${baseReference()}`}</>}
+                    </Show>
+                  </span>
+                )}
+              </Show>
             </p>
-          )}
-        </Show>
+          </div>
 
+          <Show when={mergedBy()}>
+            {change => (
+              <p class="flex max-w-md flex-wrap items-center gap-2 rounded-control bg-violet-50 px-4 py-2.5 text-sm text-violet-900 dark:bg-violet-950/40 dark:text-violet-200">
+                Merged by
+                <ChangeStateBadge state={change().forge.state} />
+                <a href={scanPath(routeParameters.projectId, change())} class="font-medium underline">
+                  {subjectLabel(change().subject)}
+                  <Show when={change().forge.title}>
+                    {title => (
+                      <>
+                        {" "}
+                        {title()}
+                      </>
+                    )}
+                  </Show>
+                </a>
+              </p>
+            )}
+          </Show>
+        </div>
         <section class="space-y-3">
           <h2 class="text-sm font-semibold tracking-wide text-slate-500 uppercase dark:text-slate-400">People</h2>
           <ul class="grid gap-2 sm:grid-cols-2">
@@ -230,9 +243,20 @@ export const SubjectPage = () => {
             )}
           >
             <div class="divide-y divide-hairline overflow-hidden rounded-panel bg-surface">
-              <For each={analysis.analyzers}>
+              <For each={shownRuns}>
                 {analyzer => <AnalyzerCard run={analyzer} />}
               </For>
+              <Show when={quietRuns.length > 0}>
+                <div class="flex flex-wrap items-center gap-x-3 gap-y-1 p-4">
+                  <span class="flex items-center gap-2 text-sm font-medium text-slate-900 dark:text-slate-100">
+                    <span class="text-emerald-600 dark:text-emerald-400"><FiCheck size={14} /></span>
+                    {`${quietRuns.length} ${quietRuns.length === 1 ? "analyzer" : "analyzers"} found nothing`}
+                  </span>
+                  <span class="text-xs text-slate-500 dark:text-slate-500">
+                    {quietRuns.map(run => analyzerByRunId(run.analyzer)?.label ?? run.analyzer).join(", ")}
+                  </span>
+                </div>
+              </Show>
             </div>
           </Show>
         </section>

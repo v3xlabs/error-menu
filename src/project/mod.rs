@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod icon;
 pub mod member;
 pub mod person;
@@ -371,6 +372,16 @@ impl Project {
         rows.into_iter()
             .map(|row| row.try_get("analyzer").map_err(DatabaseError::from))
             .collect()
+    }
+
+    pub async fn rename(&self, database: &Database, name: &str) -> Result<(), DatabaseError> {
+        sqlx::query("UPDATE projects SET name = ? WHERE id = ?")
+            .bind(name)
+            .bind(self.id.raw())
+            .execute(&database.pool)
+            .await?;
+
+        Ok(())
     }
 
     pub async fn describe(

@@ -440,6 +440,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/projects/{project_id}/name": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    project_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["RenameProject"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["ProjectOutput"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/projects/{project_id}/organization": {
         parameters: {
             query?: never;
@@ -2835,6 +2915,11 @@ export interface components {
              *     is the one view that shows many projects without opening any of them.
              */
             default_branch?: components["schemas"]["ProjectBranchOutput"] & unknown;
+            /**
+             * @description When a branch or change last moved to a head it had not held before. Only the
+             *     project list reports it, for the same reason as the default branch.
+             */
+            last_activity_at?: string;
         };
         /** @enum {string} */
         ProjectRoleOutput: "viewer" | "operator" | "owner";
@@ -2854,6 +2939,10 @@ export interface components {
         /** ProjectsOutput */
         ProjectsOutput: {
             projects: components["schemas"]["ProjectOutput"][];
+        };
+        /** RenameProject */
+        RenameProject: {
+            name: string;
         };
         /** @enum {string} */
         SchemeOutput: "light" | "dark" | "either";
