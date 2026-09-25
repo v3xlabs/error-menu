@@ -11,6 +11,7 @@ pub mod job;
 pub mod member;
 pub mod organization;
 pub mod project;
+pub mod reporting;
 pub mod repository;
 pub mod token;
 pub mod user;

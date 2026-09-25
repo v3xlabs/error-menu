@@ -300,6 +300,11 @@ pub async fn serve(state: Arc<AppState>, worker: String) {
                     tracing::error!(%error, "queue tick failed");
                 }
             }
+            () = state.queue_wake.notified() => {
+                if let Err(error) = tick(&state, &worker).await {
+                    tracing::error!(%error, "queue tick failed");
+                }
+            }
             _ = cleanup.tick() => match delete_expired_auth_records(&state.database).await {
                 Ok(0) => {}
                 Ok(deleted) => tracing::info!(deleted, "removed expired authentication records"),

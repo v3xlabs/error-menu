@@ -14,6 +14,7 @@ use sqlx::sqlite::SqliteRow;
 use crate::analysis::runner;
 use crate::database::codec::{DecodeRow, FromStored, StoredAs};
 use crate::forge::ForgeKind;
+use crate::forge::github::installation;
 use crate::prelude::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +27,9 @@ pub struct Project {
     pub description: Option<String>,
     pub icon: ProjectIcon,
     pub uses_default_analyzers: bool,
+    /// Whether error.menu writes its verdict back to the forge. The forge must also have
+    /// given error.menu permission; this alone writes nothing.
+    pub reports_to_forge: bool,
 }
 
 /// Where a project's mark lives in its own repository. A path is kept rather than the
@@ -127,6 +131,7 @@ impl Project {
             description: None,
             icon: ProjectIcon::default(),
             uses_default_analyzers: new.uses_default_analyzers,
+            reports_to_forge: false,
         })
     }
 
@@ -136,13 +141,42 @@ impl Project {
     ) -> Result<Option<Project>, DatabaseError> {
         let row = sqlx::query(
             "SELECT id, organization_id, name, remote_url, forge_kind, description, \
-             icon_light_path, icon_dark_path, uses_default_analyzers FROM projects WHERE id = ?",
+             icon_light_path, icon_dark_path, uses_default_analyzers, reports_to_forge \
+             FROM projects WHERE id = ?",
         )
         .bind(project_id.raw())
         .fetch_optional(&database.pool)
         .await?;
 
         row.as_ref().map(Project::decode_row).transpose()
+    }
+
+    /// Every project that watches one github.com repository, named as a webhook names it.
+    /// A remote can be spelled many ways, so the match is made on the parsed remote rather
+    /// than on the stored text.
+    pub async fn on_github(
+        database: &Database,
+        full_name: &str,
+    ) -> Result<Vec<Project>, DatabaseError> {
+        let rows = sqlx::query(
+            "SELECT id, organization_id, name, remote_url, forge_kind, description, \
+             icon_light_path, icon_dark_path, uses_default_analyzers, reports_to_forge \
+             FROM projects ORDER BY id",
+        )
+        .fetch_all(&database.pool)
+        .await?;
+        let full_name = full_name.to_ascii_lowercase();
+        let mut watching = Vec::new();
+        for row in &rows {
+            let project = Project::decode_row(row)?;
+            if installation::full_name(&project.remote, project.forge_kind).as_deref()
+                == Some(full_name.as_str())
+            {
+                watching.push(project);
+            }
+        }
+
+        Ok(watching)
     }
 
     pub async fn summaries_for(
@@ -303,6 +337,21 @@ impl Project {
         Ok(())
     }
 
+    pub async fn report_to_forge(
+        &mut self,
+        database: &Database,
+        enabled: bool,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query("UPDATE projects SET reports_to_forge = ? WHERE id = ?")
+            .bind(i64::from(enabled))
+            .bind(self.id.raw())
+            .execute(&database.pool)
+            .await?;
+        self.reports_to_forge = enabled;
+
+        Ok(())
+    }
+
     /// Moves the project, and records where it came from in the same transaction, so a
     /// reader can never find a project in an organization with nothing saying how it got
     /// there.
@@ -353,6 +402,7 @@ impl Project {
             "DELETE FROM snapshot_people WHERE snapshot_id IN (SELECT n.id FROM snapshots n \
              JOIN subjects s ON s.id = n.subject_id WHERE s.project_id = ?)",
             "DELETE FROM commit_analyses WHERE project_id = ?",
+            "DELETE FROM forge_checks WHERE project_id = ?",
             "DELETE FROM snapshots WHERE id IN (SELECT n.id FROM snapshots n \
              JOIN subjects s ON s.id = n.subject_id WHERE s.project_id = ?)",
             "DELETE FROM issues WHERE project_id = ?",
@@ -491,16 +541,8 @@ impl DecodeRow for Project {
                     .map(|path| RepoPath::from_stored(path, "icon_dark_path"))
                     .transpose()?,
             },
-            uses_default_analyzers: match row.try_get("uses_default_analyzers")? {
-                0 => false,
-                1 => true,
-                value => {
-                    return Err(DatabaseError::Unreadable {
-                        field: "uses_default_analyzers",
-                        value: value.to_string(),
-                    });
-                }
-            },
+            uses_default_analyzers: flag(row, "uses_default_analyzers")?,
+            reports_to_forge: flag(row, "reports_to_forge")?,
         })
     }
 }
@@ -546,4 +588,15 @@ fn validate_analyzers(analyzers: &[&str]) -> Result<(), DatabaseError> {
         .map_or(Ok(()), |analyzer| {
             Err(DatabaseError::UnknownAnalyzer((*analyzer).to_owned()))
         })
+}
+
+fn flag(row: &SqliteRow, field: &'static str) -> Result<bool, DatabaseError> {
+    match row.try_get(field)? {
+        0 => Ok(false),
+        1 => Ok(true),
+        value => Err(DatabaseError::Unreadable {
+            field,
+            value: value.to_string(),
+        }),
+    }
 }

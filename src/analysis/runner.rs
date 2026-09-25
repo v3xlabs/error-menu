@@ -9,6 +9,7 @@ use crate::analysis::{
 };
 use crate::app::AppState;
 use crate::forge::ForgeMetadata;
+use crate::forge::github::installation::GithubInstallation;
 use crate::forge::reader::{ForgeReadError, ForgeReader};
 use crate::prelude::*;
 use crate::vcs::mirror::{ChangedFile, FileChange, Mirror, MirrorError};
@@ -179,7 +180,8 @@ pub async fn run_target_in_mirror(
         .iter()
         .any(|analyzer| analyzer == ci_checks::ANALYZER)
     {
-        Some(check_run_input(project, &target.head, &state.forge).await?)
+        let installation = GithubInstallation::for_project(&state.database, project).await?;
+        Some(check_run_input(project, installation, &target.head, &state.forge).await?)
     } else {
         None
     };
@@ -269,11 +271,12 @@ pub async fn run_target_in_mirror(
 
 async fn check_run_input(
     project: &Project,
+    installation: Option<GithubInstallation>,
     head: &CommitSha,
     reader: &ForgeReader,
 ) -> Result<CheckRunInput, ForgeReadError> {
     let result = reader
-        .check_runs(&project.remote, project.forge_kind, head)
+        .check_runs(&project.remote, project.forge_kind, installation, head)
         .await;
 
     match result {

@@ -2,7 +2,9 @@ use jiff::Timestamp;
 
 use crate::analysis::runner::{self, Analysis, AnalysisError, Target};
 use crate::app::AppState;
+use crate::forge::github::installation::GithubInstallation;
 use crate::forge::reader::ForgeReadError;
+use crate::forge::report::{Reporting, Step};
 use crate::forge::{
     ChangeState, CommitReading, DiscoveredChange, ForgeAccount, ForgeMetadata, moved_remote,
 };
@@ -66,23 +68,20 @@ pub async fn run(state: &AppState, project_id: Id<Project>) -> Result<Discovery,
     let mut project = Project::load(&state.database, project_id)
         .await?
         .ok_or(DiscoveryError::ProjectNotFound)?;
+    let reporting = Reporting::for_project(state, &project).await?;
     let mirror = Mirror::open(&state.mirrors, &project.remote).await?;
     let mut fetched = false;
     let default = mirror.default_branch().await?;
     let default_head = default.head;
     let default_head_for_icon = default_head.clone();
     let default_name = default.name;
+    let branch = SubjectKind::Branch {
+        name: default_name.clone(),
+    };
     let indexed = Snapshot::indexed(&state.database, project.id, &default_head).await?;
     let analysis = match indexed {
         Some(indexed) => {
-            let subject = Subject::upsert(
-                &state.database,
-                project.id,
-                SubjectKind::Branch {
-                    name: default_name.clone(),
-                },
-            )
-            .await?;
+            let subject = Subject::upsert(&state.database, project.id, branch.clone()).await?;
             let snapshot = Snapshot::observe(
                 &state.database,
                 subject.id,
@@ -93,6 +92,15 @@ pub async fn run(state: &AppState, project_id: Id<Project>) -> Result<Discovery,
             )
             .await?;
             state.activity.observe(project.id, &snapshot);
+            if let Some(reporting) = &reporting {
+                let settled = Step::Settled {
+                    subject: &branch,
+                    snapshot_id: indexed.id,
+                };
+                reporting
+                    .record(&state.database, &snapshot.head, settled)
+                    .await;
+            }
             Analysis::for_snapshot(&state.database, snapshot).await?
         }
         None => {
@@ -102,14 +110,13 @@ pub async fn run(state: &AppState, project_id: Id<Project>) -> Result<Discovery,
                 .await?
                 .ok_or(DiscoveryError::DefaultBranchRoot)?;
             let reading = read_commit(state, &project, mirror, &default_head).await?;
-            runner::run_target_in_mirror(
+            analyse(
                 state,
+                reporting.as_ref(),
                 &project,
                 mirror,
                 Target {
-                    subject: SubjectKind::Branch {
-                        name: default_name.clone(),
-                    },
+                    subject: branch,
                     base: default_base,
                     forge: ForgeMetadata {
                         people: people_of(mirror, &default_head, Vec::new(), &reading.accounts)
@@ -128,16 +135,27 @@ pub async fn run(state: &AppState, project_id: Id<Project>) -> Result<Discovery,
         analysis,
     };
 
+    let installation = GithubInstallation::for_project(&state.database, &project).await?;
     let discovered = state
         .forge
-        .changes(&project.remote, project.forge_kind)
+        .changes(&project.remote, project.forge_kind, installation)
         .await?;
     if let Some(remote) = moved_remote(&project.remote, &discovered) {
         project.repoint(&state.database, remote).await?;
     }
     let mut changes = Vec::with_capacity(discovered.len());
     for change in discovered {
-        changes.push(read_change(state, &project, &mirror, &mut fetched, change).await?);
+        changes.push(
+            read_change(
+                state,
+                reporting.as_ref(),
+                &project,
+                &mirror,
+                &mut fetched,
+                change,
+            )
+            .await?,
+        );
     }
     if project.icon == ProjectIcon::default() && fetched {
         let icon =
@@ -170,6 +188,7 @@ async fn with_objects<'a>(
 
 async fn read_change(
     state: &AppState,
+    reporting: Option<&Reporting<'_>>,
     project: &Project,
     mirror: &Mirror,
     fetched: &mut bool,
@@ -182,17 +201,22 @@ async fn read_change(
     );
     if open && indexed.is_none() {
         let mirror = with_objects(mirror, fetched).await?;
-        return analyse_change(state, project, mirror, change).await;
+        return analyse_change(state, reporting, project, mirror, change).await;
+    }
+    let subject_kind = SubjectKind::Change {
+        number: change.number,
+    };
+    if open && let (Some(reporting), Some(indexed)) = (reporting, indexed.as_ref()) {
+        let settled = Step::Settled {
+            subject: &subject_kind,
+            snapshot_id: indexed.id,
+        };
+        reporting
+            .record(&state.database, &change.head, settled)
+            .await;
     }
 
-    let subject = Subject::upsert(
-        &state.database,
-        project.id,
-        SubjectKind::Change {
-            number: change.number,
-        },
-    )
-    .await?;
+    let subject = Subject::upsert(&state.database, project.id, subject_kind).await?;
     let snapshot = Snapshot::observe(
         &state.database,
         subject.id,
@@ -213,6 +237,7 @@ async fn read_change(
 
 async fn analyse_change(
     state: &AppState,
+    reporting: Option<&Reporting<'_>>,
     project: &Project,
     mirror: &Mirror,
     change: DiscoveredChange,
@@ -232,8 +257,9 @@ async fn analyse_change(
         signature: reading.signature,
         ..change.metadata
     };
-    let analysis = runner::run_target_in_mirror(
+    let analysis = analyse(
         state,
+        reporting,
         project,
         mirror,
         Target {
@@ -252,6 +278,38 @@ async fn analyse_change(
     })
 }
 
+/// Runs one analysis, and tells the forge where it got to when the project reports to
+/// one. A scan waiting for a forge budget leaves its check in progress, because the job
+/// comes back to it; any other failure completes the check as unfinished.
+async fn analyse(
+    state: &AppState,
+    reporting: Option<&Reporting<'_>>,
+    project: &Project,
+    mirror: &Mirror,
+    target: Target,
+) -> Result<Analysis, AnalysisError> {
+    let Some(reporting) = reporting else {
+        return runner::run_target_in_mirror(state, project, mirror, target).await;
+    };
+    let head = target.head.clone();
+    let subject = target.subject.clone();
+    reporting
+        .record(&state.database, &head, Step::Started)
+        .await;
+    let analysis = runner::run_target_in_mirror(state, project, mirror, target).await;
+    let step = match &analysis {
+        Ok(analysis) => Step::Analysed {
+            subject: &subject,
+            snapshot_id: analysis.snapshot.id,
+        },
+        Err(AnalysisError::Forge(ForgeReadError::RateLimited { .. })) => return analysis,
+        Err(_) => Step::Unfinished { subject: &subject },
+    };
+    reporting.record(&state.database, &head, step).await;
+
+    analysis
+}
+
 /// A signature the commit carries but the forge will not vouch for is reported as
 /// present and unverified. error.menu never checks the cryptography itself.
 ///
@@ -265,11 +323,12 @@ async fn read_commit(
     head: &CommitSha,
 ) -> Result<CommitReading, DiscoveryError> {
     let signed = mirror.commit_signature(head).await?;
+    let installation = GithubInstallation::for_project(&state.database, project).await?;
     // An exhausted budget is a wait, not an answer. Recorded as an absence it would key an
     // analysis to this head that nothing computes again.
     let reading = match state
         .forge
-        .read_commit(&project.remote, project.forge_kind, head)
+        .read_commit(&project.remote, project.forge_kind, installation, head)
         .await
     {
         Ok(reading) => reading,
@@ -367,8 +426,10 @@ pub async fn scan_change(
         signature: reading.signature,
         ..recorded.forge
     };
-    let analysis = runner::run_target_in_mirror(
+    let reporting = Reporting::for_project(state, &project).await?;
+    let analysis = analyse(
         state,
+        reporting.as_ref(),
         &project,
         &mirror,
         Target {

@@ -6,6 +6,7 @@ pub mod icon;
 pub mod mcp;
 pub mod oauth;
 pub mod trace;
+pub mod webhook;
 
 use std::sync::Arc;
 
@@ -14,7 +15,7 @@ use poem_openapi::OpenApiService;
 
 use crate::app::AppState;
 use crate::http::api::{
-    analysis, health, job, member, organization, project, repository, token, user,
+    analysis, health, job, member, organization, project, reporting, repository, token, user,
 };
 
 const TITLE: &str = "error.menu";
@@ -46,6 +47,9 @@ pub fn routes(
                 state: Arc::clone(&state),
             },
             repository::RepositoryApi {
+                state: Arc::clone(&state),
+            },
+            reporting::ReportingApi {
                 state: Arc::clone(&state),
             },
             token::TokenApi {
@@ -81,6 +85,11 @@ pub fn routes(
     );
     let routes = Route::new()
         .nest(MOUNT, api_routes)
+        // Outside the session guard: GitHub signs a delivery instead of signing in.
+        .at(
+            "/forge/github/events",
+            poem::post(webhook::github).data(Arc::clone(&state)),
+        )
         .at(
             "/mcp",
             mcp::endpoint(Arc::clone(&state)).with(auth::RequireSession::new(state)),

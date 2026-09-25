@@ -124,6 +124,32 @@ impl Snapshot {
         Ok(Some(snapshot))
     }
 
+    /// The pull request a head was last seen as, if it was seen as one. A re-run asked for
+    /// on the forge names a commit, and a re-scan is asked of the change.
+    pub async fn change_with_head(
+        database: &Database,
+        project_id: Id<Project>,
+        head: &CommitSha,
+    ) -> Result<Option<u64>, DatabaseError> {
+        let key: Option<String> = sqlx::query_scalar(
+            "SELECT s.subject_key FROM snapshots n JOIN subjects s ON s.id = n.subject_id \
+             WHERE s.project_id = ? AND s.kind = 'change' AND n.head = ? \
+             ORDER BY n.id DESC LIMIT 1",
+        )
+        .bind(project_id.raw())
+        .bind(head.as_str())
+        .fetch_optional(&database.pool)
+        .await?;
+
+        key.map(|key| {
+            key.parse().map_err(|_| DatabaseError::Unreadable {
+                field: "subjects.subject_key",
+                value: key,
+            })
+        })
+        .transpose()
+    }
+
     pub async fn observe(
         database: &Database,
         subject_id: Id<Subject>,

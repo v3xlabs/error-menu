@@ -120,5 +120,43 @@ This is a security boundary first and a scaling unit second.
 ## Work sources
 
 Polling and webhooks produce the same job. Polling is the baseline. A webhook is a latency
-optimisation on the same path, never a second code path. A webhook also requires changing
-settings on the watched repository, which leaves a trace, so it is opt in per project.
+optimisation on the same path, never a second code path: `POST /forge/github/events` calls
+`Job::enqueue` exactly as the schedule does and wakes the queue, so a lost delivery costs
+latency and the next poll finds the change anyway.
+
+Webhooks come from the GitHub App, not from a hook added to each repository. GitHub signs
+every delivery with the webhook secret in `X-Hub-Signature-256`, and that signature is the
+endpoint's only authentication, so it sits outside the session guard. An install is learned
+from the signed `installation` and `installation_repositories` deliveries, never from the
+`installation_id` GitHub adds to the setup redirect, which anyone can forge.
+
+## Reporting to the forge
+
+A project reports to GitHub when three things hold: its owner turned `reports_to_forge` on,
+the server has a GitHub App, and an installation of that app covers the repository. The
+install gives permission and the switch decides, so an install on every repository of an
+account turns nothing on by itself. Signing in to error.menu stays on the separate OAuth app
+and asks for `read:user` alone: a reader never sees the install, only the owner who turns
+reporting on does.
+
+The server holds the app in `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_FILE` and
+`GITHUB_WEBHOOK_SECRET`, with `PUBLIC_ORIGIN` for the Details link. None set is a server that
+never writes; some set is a startup error. Register the app by hand with the webhook URL
+`PUBLIC_ORIGIN/forge/github/events`; repository permissions Checks read and write, Pull
+requests read, Contents read and Metadata read; the events Pull request, Push, Check run and
+Check suite; and user authorization during installation off. Only github.com repositories
+can be covered.
+
+A scan writes one check named `error.menu` on the head: queued when a webhook arrives,
+in progress when the analysis starts, completed when it ends. The check carries counts and
+the Details link, never a finding's title or location, because anyone can read a check on
+a public repository. It is red for an introduced, untriaged High or Critical finding from any
+analyzer, green when the change introduced nothing untriaged, and grey otherwise, including
+a scan that could not finish. A write the forge refuses never fails the scan: the next pass
+that finds the head without a completed check writes it again. Re-run on GitHub scans a pull
+request head again; any other head gets a fresh check from the stored analysis.
+
+The app writes and the worker never does: the app lives in `AppState` on the side that holds
+the database. A repository an installation covers is also read with that installation's
+token, asked for that one repository only, which gives it the installation's own request
+budget. The mirror still clones anonymously.
