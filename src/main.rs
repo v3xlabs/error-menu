@@ -8,6 +8,7 @@ use tracing_subscriber::EnvFilter;
 
 use error_menu::app::AppState;
 use error_menu::database::Database;
+use error_menu::forge::github::app::GithubApp;
 use error_menu::forge::reader::ForgeReader;
 use error_menu::http::oauth::GithubAuth;
 use error_menu::project::activity::ProjectActivity;
@@ -43,11 +44,20 @@ async fn main() -> Result<(), std::io::Error> {
     let database = Database::open(&database_url, 0)
         .await
         .map_err(std::io::Error::other)?;
-    let forge = ForgeReader::new().map_err(std::io::Error::other)?;
+    let github_app = GithubApp::from_environment()
+        .map_err(std::io::Error::other)?
+        .map(Arc::new);
+    match &github_app {
+        Some(app) => tracing::info!(app = app.id(), "checks are written as the GitHub App"),
+        None => tracing::info!("no GitHub App is configured, so no forge is written to"),
+    }
+    let forge = ForgeReader::new(github_app.clone()).map_err(std::io::Error::other)?;
     let activity = ProjectActivity::load(&database)
         .await
         .map_err(std::io::Error::other)?;
-    let state = Arc::new(AppState::new(database, forge, activity, &data_root));
+    let state = Arc::new(AppState::new(
+        database, forge, github_app, activity, &data_root,
+    ));
     let github_auth =
         GithubAuth::from_environment(Arc::clone(&state)).map_err(std::io::Error::other)?;
     tracing::info!(%address, "error.menu is listening");

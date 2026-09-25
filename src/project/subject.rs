@@ -81,7 +81,8 @@ impl DecodeRow for Subject {
 }
 
 impl SubjectKind {
-    fn stored(&self) -> (&'static str, String) {
+    /// The kind and key a subject is stored and addressed by, in the database and in a URL.
+    pub fn stored(&self) -> (&'static str, String) {
         match self {
             SubjectKind::Change { number } => ("change", number.to_string()),
             SubjectKind::Branch { name } => ("branch", name.clone()),

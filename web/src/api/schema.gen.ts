@@ -2124,6 +2124,154 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/projects/{project_id}/reporting": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Whether a project writes its verdict to its forge, and what the forge still needs
+         *     before it can.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    project_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["ForgeReportingOutput"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        /**
+         * Turns reporting on or off. Only an owner may, like every other project setting. The
+         *     switch can be on before the app is installed; nothing is written until it is.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    project_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SetForgeReporting"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["ForgeReportingOutput"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json; charset=utf-8": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/tokens": {
         parameters: {
             query?: never;
@@ -2768,6 +2916,16 @@ export interface components {
             state?: components["schemas"]["ChangeStateOutput"];
             merge_commit_sha?: string;
         };
+        /** ForgeReportingOutput */
+        ForgeReportingOutput: {
+            /** @description Whether the project writes its verdicts to the forge. Takes effect once installed. */
+            enabled: boolean;
+            state: components["schemas"]["ForgeReportingState"];
+            /** @description Where an account installs the GitHub App on the repository. */
+            install_url?: string;
+        };
+        /** @enum {string} */
+        ForgeReportingState: "unavailable" | "not_installed" | "installed";
         /** Health */
         Health: {
             status: string;
@@ -2986,6 +3144,10 @@ export interface components {
         };
         /** @enum {string} */
         SchemeOutput: "light" | "dark" | "either";
+        /** SetForgeReporting */
+        SetForgeReporting: {
+            enabled: boolean;
+        };
         /** SetOrganizationMember */
         SetOrganizationMember: {
             role: components["schemas"]["OrganizationRoleOutput"];

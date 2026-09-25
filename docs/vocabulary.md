@@ -5,7 +5,9 @@ mirror per project and read all content from it. Diffs never come from a forge A
 forge diffs are rate limited and truncated for large changes.
 
 **Forge** — everything built on top of git: pull requests, issues, comments, review state,
-check runs and their logs. Forge access is read only. A project can have no forge at all.
+check runs and their logs. Forge access is read only, with one exception: a project that
+reports to its forge gets one check per scanned commit, written as the GitHub App. Nothing
+else is ever written. A project can have no forge at all.
 
 **Organization** — who a set of projects belongs to. It holds its own grants, so one grant on an
 organization reaches every project inside it. A project belongs to exactly one organization. This

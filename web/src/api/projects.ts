@@ -309,6 +309,50 @@ export const setProjectAnalyzers = async (
   }
 };
 
+export type ForgeReporting = components["schemas"]["ForgeReportingOutput"];
+
+export const readForgeReporting = async (projectId: string): Promise<Result<ForgeReporting>> => {
+  const response = await api("/projects/{project_id}/reporting", "get", {
+    path: { project_id: projectId },
+  });
+
+  if (response.status === 200) return { ok: true, value: response.data };
+
+  switch (response.status) {
+    case 400:
+    case 403:
+    case 404:
+    case 500: {
+      return { ok: false, message: response.data.message };
+    }
+    default: {
+      return failed(response.status);
+    }
+  }
+};
+
+export const setForgeReporting = async (projectId: string, isEnabled: boolean): Promise<Result<ForgeReporting>> => {
+  const response = await api("/projects/{project_id}/reporting", "put", {
+    path: { project_id: projectId },
+    contentType: "application/json; charset=utf-8",
+    data: { enabled: isEnabled },
+  });
+
+  if (response.status === 200) return { ok: true, value: response.data };
+
+  switch (response.status) {
+    case 400:
+    case 403:
+    case 404:
+    case 500: {
+      return { ok: false, message: response.data.message };
+    }
+    default: {
+      return failed(response.status);
+    }
+  }
+};
+
 export const scanChange = async (projectId: string, number: number): Promise<Result<Analysis>> => {
   const response = await api("/projects/{project_id}/changes/{number}/scan", "post", {
     path: { project_id: projectId, number },

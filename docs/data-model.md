@@ -116,6 +116,18 @@ optional conclusion, URL, and optional log reference. `ci-check-runs` reads thos
 and emits `TestsFailing` only when a completed check concludes with failure. Check-run storage is
 separate from the analyzer run so a reader can inspect the source facts and the conclusion.
 
+## Forge check
+
+`forge_checks` keeps the check error.menu wrote on one commit of one project: the forge's
+own check id and whether it is queued, in progress or completed. It is keyed by project and
+head rather than by subject, because a forge check belongs to a commit, so a pull request
+head and the branch it lands on share one. A re-scan of a head whose check is completed
+writes a new check and replaces the row.
+
+`github_installation_repositories` records which installation of the GitHub App covers a
+repository, keyed by GitHub's repository id so a renamed repository keeps its row. Rows
+arrive only from signed webhooks.
+
 ## Deferred evidence
 
 The data model reserves evidence for tool output, model rationales, and log excerpts. Evidence

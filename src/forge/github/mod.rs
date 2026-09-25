@@ -1,6 +1,10 @@
 //! GitHub, and the commit shape the forges that copy its API answer with. Gitea and
 //! Forgejo read commits through this module rather than describing the same payload twice.
 
+pub mod app;
+pub mod check;
+pub mod installation;
+
 use serde::Deserialize;
 
 use super::reader::{Api, ApiBase, Credential, ForgeReadError, PAGE_SIZE, optional_sha, sha};
@@ -99,9 +103,13 @@ impl Forge for Github {
             )
             .await?;
 
+        // error.menu's own check is its verdict, not CI. Read back as CI, a red verdict
+        // would come back on the next scan as a failing test.
+        let own_app = api.github_app_id();
         Ok(response
             .check_runs
             .into_iter()
+            .filter(|run| own_app.is_none() || run.app.as_ref().map(|app| app.id) != own_app)
             .map(GithubCheckRun::into_check_run)
             .collect())
     }
@@ -122,6 +130,13 @@ struct GithubCheckRun {
     details_url: Option<String>,
     #[serde(default)]
     url: Option<String>,
+    #[serde(default)]
+    app: Option<GithubCheckApp>,
+}
+
+#[derive(Deserialize)]
+struct GithubCheckApp {
+    id: u64,
 }
 
 impl GithubCheckRun {

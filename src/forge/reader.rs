@@ -1,10 +1,13 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use jiff::Timestamp;
 use serde::de::DeserializeOwned;
 
 use super::gitea::Gitea;
-use super::github::Github;
+use super::github::app::{GithubApp, GithubAppError};
+use super::github::installation::GithubInstallation;
+use super::github::{API_HOST, Github};
 use super::gitlab::Gitlab;
 use super::{CommitReading, DiscoveredChange, Forge, ForgeKind};
 use crate::analysis::ci_checks::CheckRun;
@@ -40,6 +43,8 @@ pub enum ForgeReadError {
         #[source]
         source: CommitShaError,
     },
+    #[error("{0}")]
+    App(GithubAppError),
 }
 
 #[derive(Clone)]
@@ -48,6 +53,9 @@ pub struct ForgeReader {
     /// One credential per host. A credential for one forge must never travel to another,
     /// because a project's remote is chosen by whoever created the project.
     credentials: BTreeMap<String, Credential>,
+    /// A repository the GitHub App is installed on is read with that installation's own
+    /// token, which carries its own budget.
+    github_app: Option<Arc<GithubApp>>,
 }
 
 /// How a forge is told who is asking. A forge offers its own through
@@ -108,15 +116,25 @@ impl ApiBase {
 pub(crate) struct Api<'a> {
     reader: &'a ForgeReader,
     pub(crate) repository: Repository,
+    installation_token: Option<String>,
 }
 
 impl Api<'_> {
+    /// The id of the GitHub App this server writes checks as, when it has one.
+    pub(crate) fn github_app_id(&self) -> Option<u64> {
+        self.reader.github_app.as_ref().map(|app| app.id())
+    }
+
     pub(crate) async fn get<Value: DeserializeOwned>(
         &self,
         url: reqwest::Url,
     ) -> Result<Value, ForgeReadError> {
         let host = url.host_str().unwrap_or_default().to_owned();
-        let response = self.reader.authorised(&host, url).send().await?;
+        let response = self
+            .reader
+            .authorised(&host, url, self.installation_token.as_deref())
+            .send()
+            .await?;
         let status = response.status();
         if status.is_client_error() {
             return Err(refusal(host, &response, status.as_u16()));
@@ -139,7 +157,7 @@ impl ForgeReader {
     /// `FORGE_TOKENS` holds `host=token` pairs separated by commas, and a forge may have a
     /// credential of its own to offer. An explicit token for a host wins over it. Without
     /// either, requests to a host stay anonymous and share that host's anonymous budget.
-    pub fn new() -> Result<Self, ForgeReadError> {
+    pub fn new(github_app: Option<Arc<GithubApp>>) -> Result<Self, ForgeReadError> {
         let mut credentials = credentials(std::env::var("FORGE_TOKENS").as_deref().unwrap_or(""));
         for (host, credential) in [
             Github::client_credential(),
@@ -173,6 +191,7 @@ impl ForgeReader {
                 .user_agent(concat!("error.menu/", env!("CARGO_PKG_VERSION")))
                 .build()?,
             credentials,
+            github_app,
         })
     }
 
@@ -183,8 +202,9 @@ impl ForgeReader {
         &self,
         remote: &RemoteUrl,
         configured_kind: ForgeKind,
+        installation: Option<GithubInstallation>,
     ) -> Result<Vec<DiscoveredChange>, ForgeReadError> {
-        let api = self.api(remote, configured_kind)?;
+        let api = self.api(remote, configured_kind, installation).await?;
 
         match api.repository.kind {
             ForgeKind::Github => Github::changes(&api).await,
@@ -202,9 +222,10 @@ impl ForgeReader {
         &self,
         remote: &RemoteUrl,
         configured_kind: ForgeKind,
+        installation: Option<GithubInstallation>,
         head: &CommitSha,
     ) -> Result<CommitReading, ForgeReadError> {
-        let api = self.api(remote, configured_kind)?;
+        let api = self.api(remote, configured_kind, installation).await?;
 
         match api.repository.kind {
             ForgeKind::Github => Github::read_commit(&api, head).await,
@@ -218,9 +239,10 @@ impl ForgeReader {
         &self,
         remote: &RemoteUrl,
         configured_kind: ForgeKind,
+        installation: Option<GithubInstallation>,
         head: &CommitSha,
     ) -> Result<Vec<CheckRun>, ForgeReadError> {
-        let api = self.api(remote, configured_kind)?;
+        let api = self.api(remote, configured_kind, installation).await?;
 
         match api.repository.kind {
             ForgeKind::Github => Github::check_runs(&api, head).await,
@@ -230,30 +252,62 @@ impl ForgeReader {
         }
     }
 
-    fn api(
+    async fn api(
         &self,
         remote: &RemoteUrl,
         configured_kind: ForgeKind,
+        installation: Option<GithubInstallation>,
     ) -> Result<Api<'_>, ForgeReadError> {
+        let repository = Repository::from_remote(remote, configured_kind)?;
+        let installation_token = match (&self.github_app, installation) {
+            (Some(app), Some(installation)) if repository.on_public_github() => {
+                match app
+                    .installation_token(installation.id, &repository.project_path())
+                    .await
+                {
+                    Ok(token) => Some(token),
+                    // An install removed while error.menu was not listening still has its
+                    // row. The repository reads as it did before it was installed.
+                    Err(error @ GithubAppError::Refused { .. }) => {
+                        tracing::warn!(%error, installation = installation.id, "reading without the installation");
+                        None
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            _ => None,
+        };
+
         Ok(Api {
             reader: self,
-            repository: Repository::from_remote(remote, configured_kind)?,
+            repository,
+            installation_token,
         })
     }
 
-    /// A request carrying the credential its host is owed, if any.
-    fn authorised(&self, host: &str, url: reqwest::Url) -> reqwest::RequestBuilder {
+    /// A request carrying the credential its host is owed, if any. An installation token
+    /// is only ever owed to the GitHub API host, whatever host the URL names.
+    fn authorised(
+        &self,
+        host: &str,
+        url: reqwest::Url,
+        installation_token: Option<&str>,
+    ) -> reqwest::RequestBuilder {
         let request = self.client.get(url);
 
-        match self.credentials.get(host) {
-            Some(credential) => credential.apply(request),
-            None => request,
+        match (installation_token, self.credentials.get(host)) {
+            (Some(token), _) if host == API_HOST => request.bearer_auth(token),
+            (_, Some(credential)) => credential.apply(request),
+            _ => request,
         }
     }
 }
 
 impl Repository {
-    fn from_remote(remote: &RemoteUrl, configured_kind: ForgeKind) -> Result<Self, ForgeReadError> {
+    pub(crate) fn from_remote(
+        remote: &RemoteUrl,
+        configured_kind: ForgeKind,
+    ) -> Result<Self, ForgeReadError> {
         let remote =
             reqwest::Url::parse(remote.as_str()).map_err(|_| ForgeReadError::RepositoryPath)?;
         let host = remote.host_str().ok_or(ForgeReadError::RepositoryPath)?;
@@ -304,6 +358,11 @@ impl Repository {
         self.path.join("/")
     }
 
+    /// Whether the repository is on github.com, the one host a registered app answers for.
+    pub(crate) fn on_public_github(&self) -> bool {
+        self.kind == ForgeKind::Github && self.base.url.host_str() == Some(API_HOST)
+    }
+
     pub(crate) fn endpoint(&self, segments: &[&str]) -> reqwest::Url {
         let mut url = self.base.url.clone();
         let mut path = url
@@ -345,7 +404,7 @@ impl Repository {
 /// A forge that is out of budget and a forge that will not answer without a credential
 /// both answer 403. Only the exhausted budget is worth waiting for, and the forge says
 /// when the wait ends, so that answer must survive as more than a status code.
-fn refusal(host: String, response: &reqwest::Response, status: u16) -> ForgeReadError {
+pub(crate) fn refusal(host: String, response: &reqwest::Response, status: u16) -> ForgeReadError {
     let header = |name: &str| {
         response
             .headers()
@@ -481,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn public_github_reads_carry_the_oauth_app_and_no_account() {
+    fn public_github_reads_carry_the_installation_or_the_oauth_app_and_no_account() {
         let reader = ForgeReader {
             client: reqwest::Client::new(),
             credentials: BTreeMap::from([(
@@ -491,28 +550,34 @@ mod tests {
                     secret: "app-secret".to_owned(),
                 },
             )]),
+            github_app: None,
+        };
+        let authorization = |host: &str, url: &str, installation_token: Option<&str>| {
+            reader
+                .authorised(host, reqwest::Url::parse(url).unwrap(), installation_token)
+                .build()
+                .unwrap()
+                .headers()
+                .get("authorization")
+                .map(|value| value.to_str().unwrap().to_owned())
         };
 
-        let authorised = reader
-            .authorised(
-                crate::forge::github::API_HOST,
-                reqwest::Url::parse("https://api.github.com/repos/o/r").unwrap(),
-            )
-            .build()
-            .unwrap();
         assert_eq!(
-            authorised.headers().get("authorization").unwrap(),
-            "Basic YXBwLWlkOmFwcC1zZWNyZXQ="
+            authorization(API_HOST, "https://api.github.com/repos/o/r", None).as_deref(),
+            Some("Basic YXBwLWlkOmFwcC1zZWNyZXQ=")
         );
-
-        let elsewhere = reader
-            .authorised(
-                "github.com",
-                reqwest::Url::parse("https://github.com/o/r").unwrap(),
-            )
-            .build()
-            .unwrap();
-        assert!(elsewhere.headers().get("authorization").is_none());
+        assert_eq!(
+            authorization(API_HOST, "https://api.github.com/repos/o/r", Some("ghs_x")).as_deref(),
+            Some("Bearer ghs_x")
+        );
+        assert_eq!(
+            authorization("github.com", "https://github.com/o/r", None),
+            None
+        );
+        assert_eq!(
+            authorization("github.com", "https://github.com/o/r", Some("ghs_x")),
+            None
+        );
     }
 
     #[tokio::test]

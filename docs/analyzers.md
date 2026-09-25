@@ -32,7 +32,9 @@ the before and after submodule paths and URLs.
 
 `ci-check-runs` reads CI facts from the configured forge at the snapshot head. It stores each
 normalized check run and emits `TestsFailing` for completed failed checks. A project without a
-supported forge skips this analyzer. A forge read failure marks only this analyzer failed.
+supported forge skips this analyzer. A forge read failure marks only this analyzer failed. The
+check error.menu writes itself is not CI and is left out, so its own verdict never comes back
+as a failing test.
 
 `repository-hygiene` reports changed generated-output directories and files over the size limit.
 
