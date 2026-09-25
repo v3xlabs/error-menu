@@ -91,6 +91,16 @@ struct RerunEvent {
     #[serde(alias = "check_suite")]
     check_run: RerunTarget,
     repository: RepositoryRef,
+    sender: Sender,
+}
+
+/// The GitHub account whose action caused a delivery. For a re-run it is who pressed the
+/// button, which is the one thing that tells an honest re-run from someone keeping the
+/// server busy.
+#[derive(Deserialize)]
+struct Sender {
+    login: String,
+    id: i64,
 }
 
 #[derive(Deserialize)]
@@ -222,6 +232,13 @@ async fn handle(
             let ours = event.check_run.app.map(|app| app.id) == Some(app.id());
             if event.action == "rerequested" && ours {
                 let head = commit(&event.check_run.head_sha)?;
+                tracing::info!(
+                    sender = %event.sender.login,
+                    sender_id = event.sender.id,
+                    repository = %event.repository.full_name,
+                    %head,
+                    "a re-run was asked for on GitHub"
+                );
                 rerun(state, &event.repository.full_name, head).await?;
             }
         }

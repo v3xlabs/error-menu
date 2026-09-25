@@ -147,9 +147,7 @@ fn output(verdict: &Verdict) -> Output {
     else {
         return Output {
             title: "error.menu could not finish the scan".to_owned(),
-            summary: "The scan stopped before every analyzer ran. error.menu tries again on its \
-                      next pass."
-                .to_owned(),
+            summary: String::new(),
         };
     };
     let total: u64 = new_findings.values().sum();
@@ -170,12 +168,6 @@ fn output(verdict: &Verdict) -> Output {
             if *failed_analyzers == 1 { "" } else { "s" }
         ));
     }
-    lines.push(String::new());
-    lines.push(
-        "Only findings this change introduced and nobody has triaged are counted. \
-         Open error.menu for the details."
-            .to_owned(),
-    );
 
     Output {
         title,
