@@ -238,11 +238,11 @@ impl<'a> Reporting<'a> {
                 snapshot_id,
             } => Request::Completed {
                 verdict: Verdict::for_snapshot(database, snapshot_id).await?,
-                details_url: self.details_url(subject),
+                details_url: self.details_url(subject, head),
             },
             Step::Unfinished { subject } => Request::Completed {
                 verdict: Verdict::Unfinished,
-                details_url: self.details_url(subject),
+                details_url: self.details_url(subject, head),
             },
         };
         let token = self
@@ -261,9 +261,10 @@ impl<'a> Reporting<'a> {
         Ok(())
     }
 
-    /// The subject page a reader of the check opens. It needs a sign-in, so the detail
-    /// behind the counts stays with error.menu.
-    fn details_url(&self, subject: &SubjectKind) -> String {
+    /// The subject page at the scan of this head, which is what the check is about. Without
+    /// the head the page shows the newest scan, and a link on an older commit would open a
+    /// later one. The page needs a sign-in, so the detail behind the counts stays here.
+    fn details_url(&self, subject: &SubjectKind, head: &CommitSha) -> String {
         let (kind, key) = subject.stored();
         let project = self.project_id.encode();
         let mut url = self.app.public_origin().clone();
@@ -271,6 +272,9 @@ impl<'a> Reporting<'a> {
             path.clear()
                 .extend(["projects", project.as_str(), kind, key.as_str()]);
         }
+        url.query_pairs_mut()
+            .clear()
+            .append_pair("head", head.as_str());
 
         url.to_string()
     }
