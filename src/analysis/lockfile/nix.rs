@@ -35,7 +35,10 @@ pub(super) fn parse(
 
 fn describe(locked: &Locked) -> String {
     match (&locked.owner, &locked.repo, &locked.url) {
-        (Some(owner), Some(repo), _) => format!("{}:{owner}/{repo}", locked.kind),
+        (Some(owner), Some(repo), _) => match &locked.host {
+            Some(host) => format!("{}:{owner}/{repo}?host={host}", locked.kind),
+            None => format!("{}:{owner}/{repo}", locked.kind),
+        },
         (_, _, Some(url)) => format!("{}:{url}", locked.kind),
         _ => locked.kind.clone(),
     }
@@ -45,10 +48,11 @@ fn describe(locked: &Locked) -> String {
 /// revision it pins when the host is a forge that serves one. `describe` stays for the
 /// detail sentence; this is the part a link can be built from.
 fn origin_of(locked: &Locked) -> PackageOrigin {
-    let host = match locked.kind.as_str() {
-        "github" => "https://github.com",
-        "gitlab" => "https://gitlab.com",
-        "sourcehut" => "https://git.sr.ht",
+    let host = match (locked.kind.as_str(), &locked.host) {
+        ("github" | "gitlab" | "sourcehut", Some(host)) => format!("https://{host}"),
+        ("github", None) => "https://github.com".to_owned(),
+        ("gitlab", None) => "https://gitlab.com".to_owned(),
+        ("sourcehut", None) => "https://git.sr.ht".to_owned(),
         _ => {
             return match &locked.url {
                 Some(url) => PackageOrigin::Remote { url: url.clone() },
@@ -87,6 +91,9 @@ struct Locked {
     #[serde(rename = "type")]
     kind: String,
     owner: Option<String>,
+    /// Set when a forge input names a server other than the forge's public one, such as a
+    /// GitHub Enterprise or self-hosted GitLab instance.
+    host: Option<String>,
     repo: Option<String>,
     url: Option<String>,
     rev: Option<String>,
@@ -165,6 +172,31 @@ mod tests {
         assert_eq!(
             helper.source.as_deref(),
             Some("git:https://example.invalid/helper")
+        );
+    }
+
+    #[test]
+    fn a_forge_input_on_another_server_names_that_server() {
+        let packages = parse(
+            r#"{"nodes": {
+                "root": { "inputs": { "nixpkgs": "nixpkgs" } },
+                "nixpkgs": { "locked": {
+                    "type": "github", "host": "git.example.invalid",
+                    "owner": "NixOS", "repo": "nixpkgs", "rev": "abc"
+                } }
+            }, "root": "root", "version": 7}"#,
+        )
+        .expect("parses");
+
+        assert_eq!(
+            packages[0].origin,
+            PackageOrigin::Remote {
+                url: "https://git.example.invalid/NixOS/nixpkgs/tree/abc".to_owned()
+            }
+        );
+        assert_eq!(
+            packages[0].source.as_deref(),
+            Some("github:NixOS/nixpkgs?host=git.example.invalid")
         );
     }
 

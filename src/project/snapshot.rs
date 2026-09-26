@@ -41,6 +41,7 @@ impl Snapshot {
         let mut transaction = database.write().await?;
         let unscanned: Option<i64> = sqlx::query_scalar(
             "SELECT n.id FROM snapshots n WHERE n.subject_id = ? AND n.head = ? \
+             AND n.analysis_snapshot_id IS NULL \
              AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.snapshot_id = n.id) \
              ORDER BY n.id LIMIT 1",
         )

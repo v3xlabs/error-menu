@@ -36,6 +36,7 @@ struct ProjectOutput {
 #[derive(Debug, Serialize, JsonSchema)]
 struct AnalysesOutput {
     analyses: Vec<AnalysisOutput>,
+    next_before: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -128,17 +129,27 @@ impl ErrorMenuTools {
     async fn list_analyses(
         &self,
         project_id: String,
+        before: Option<String>,
     ) -> Result<StructuredContent<AnalysesOutput>, String> {
         let (project, _) = self.readable_project(&project_id).await?;
-        let analyses = SnapshotAnalysis::for_project(&self.state.database, project.id)
-            .await
-            .map_err(|error| {
-                tracing::error!(%error, "MCP analysis listing failed");
-                "could not list analyses".to_owned()
-            })?;
+        let before = before
+            .map(|value| {
+                value
+                    .parse::<Id<Snapshot>>()
+                    .map_err(|error| error.to_string())
+            })
+            .transpose()?;
+        let (analyses, next_before) =
+            SnapshotAnalysis::page(&self.state.database, project.id, before, None, false)
+                .await
+                .map_err(|error| {
+                    tracing::error!(%error, "MCP analysis listing failed");
+                    "could not list analyses".to_owned()
+                })?;
 
         Ok(StructuredContent(AnalysesOutput {
             analyses: analyses.into_iter().map(analysis_output).collect(),
+            next_before: next_before.map(|id| id.encode()),
         }))
     }
 
