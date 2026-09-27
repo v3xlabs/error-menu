@@ -1,7 +1,9 @@
 import { DropdownMenu } from "@kobalte/core/dropdown-menu";
 import { Tooltip } from "@kobalte/core/tooltip";
+import { useLocation } from "@solidjs/router";
 import type { JSX } from "@solidjs/web";
 import { FiActivity, FiBookOpen, FiCheck, FiChevronDown, FiKey, FiLayers, FiLogOut, FiShield, FiUsers } from "solid-icons/fi";
+import { SiGithub } from "solid-icons/si";
 import { createEffect, createSignal, For, Match, Show, Switch, untrack } from "solid-js";
 
 import type { HealthState } from "../api/health";
@@ -24,6 +26,49 @@ const MENU_TRIGGER = "flex max-w-48 items-center gap-1.5 rounded-control bg-rais
 const GLYPH = "flex size-8 items-center justify-center rounded-control text-slate-500 hover:bg-raised hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100";
 const TOOLTIP = "z-50 max-w-xs rounded-control bg-slate-900 px-2.5 py-1.5 text-xs text-white dark:bg-slate-100 dark:text-slate-900";
 const ALL_ORGANIZATIONS = "all";
+
+const SignInButton = () => {
+  const location = useLocation();
+
+  return (
+    <a
+      href={`/auth/github/login?${new URLSearchParams({ return_to: `${location.pathname}${location.search}` }).toString()}`}
+      rel="external"
+      class="inline-flex items-center gap-2 rounded-control bg-[#24292f] px-3 py-1.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-[#32383f] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-500 dark:bg-white dark:text-[#24292f] dark:hover:bg-slate-200"
+    >
+      <SiGithub size={15} />
+      Sign in with GitHub
+    </a>
+  );
+};
+
+const SignInPrompt = () => (
+  <section class="mx-auto mt-12 flex max-w-md flex-col items-center gap-5 rounded-panel bg-surface px-8 py-12 text-center">
+    <img src="/logo.svg" alt="" class="size-12" />
+    <h1 class="text-lg font-semibold">Sign in to see this page</h1>
+    <SignInButton />
+  </section>
+);
+
+// Every page reads the API, which refuses a request without a session. The API reference
+// reads the public OpenAPI document instead, so it needs no account.
+const AccountGate = (properties: { children?: JSX.Element; }) => {
+  const account = useAccount();
+  const location = useLocation();
+
+  return (
+    <Show
+      when={location.pathname === "/docs" || (account.state().phase !== "loading" && account.state().phase !== "anonymous")}
+      fallback={(
+        <Show when={account.state().phase === "anonymous"}>
+          <SignInPrompt />
+        </Show>
+      )}
+    >
+      {properties.children}
+    </Show>
+  );
+};
 
 const GlyphLink = (properties: { href: string; label: string; children: JSX.Element; }) => (
   <Tooltip>
@@ -248,9 +293,7 @@ const AccountControls = () => {
         <span class="text-sm text-slate-500 dark:text-slate-400" role="status">Checking account...</span>
       </Match>
       <Match when={account.state().phase === "anonymous"}>
-        <a href="/auth/github/login" rel="external" class="rounded-control bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white">
-          Sign in
-        </a>
+        <SignInButton />
       </Match>
       <Match when={loadFailure()}>
         {message => <span class="text-sm text-red-600 dark:text-red-400" role="alert">{message()}</span>}
@@ -306,7 +349,9 @@ const AppShellContent = (properties: { children?: JSX.Element; }) => (
         </div>
       </div>
     </header>
-    <main class="mx-auto max-w-5xl px-6 py-8">{properties.children}</main>
+    <main class="mx-auto max-w-5xl px-6 py-8">
+      <AccountGate>{properties.children}</AccountGate>
+    </main>
   </div>
 );
 

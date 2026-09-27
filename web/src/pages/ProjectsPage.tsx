@@ -13,7 +13,6 @@ import { sinceNow } from "../domain/time";
 
 type ProjectsState
   = | { phase: "loading"; }
-    | { phase: "anonymous"; }
     | { phase: "loaded"; projects: readonly Project[]; }
     | { phase: "error"; message: string; };
 
@@ -110,9 +109,6 @@ const renderProjects = (state: ProjectsState, order: ProjectOrder, organizationI
     case "loading": {
       return <p class="text-sm text-slate-500 dark:text-slate-500">Loading projects...</p>;
     }
-    case "anonymous": {
-      return <p class={PANEL_MESSAGE}>Sign in to view projects.</p>;
-    }
     case "error": {
       return <p class="text-sm text-red-600 dark:text-red-400" role="alert">{state.message}</p>;
     }
@@ -188,28 +184,15 @@ export const ProjectsPage = () => {
   createEffect(
     () => account.state(),
     (accountState) => {
-      switch (accountState.phase) {
-        case "loaded": {
-          void load();
+      if (accountState.phase === "loaded") {
+        void load();
 
-          return;
-        }
-        case "anonymous": {
-          latestLoad += 1;
-          setState({ phase: "anonymous" });
+        return;
+      }
 
-          return;
-        }
-        case "error": {
-          latestLoad += 1;
-          setState({ phase: "error", message: accountState.message });
-
-          return;
-        }
-        case "loading": {
-          latestLoad += 1;
-          setState({ phase: "loading" });
-        }
+      if (accountState.phase === "error") {
+        latestLoad += 1;
+        setState({ phase: "error", message: accountState.message });
       }
     },
   );

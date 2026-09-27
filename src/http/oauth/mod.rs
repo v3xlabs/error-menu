@@ -17,6 +17,7 @@ use super::auth::{
 const GITHUB_ISSUER: &str = "https://github.com";
 const ATTEMPT_SECONDS: u64 = 600;
 const STATE_COOKIE: &str = "__Host-error-menu-oauth-state";
+const MAX_RETURN_PATH_BYTES: usize = 2048;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GithubAuthConfigError {
@@ -41,6 +42,11 @@ pub struct GithubAuth {
 struct Callback {
     code: String,
     state: String,
+}
+
+#[derive(Deserialize)]
+struct SignIn {
+    return_to: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -157,11 +163,27 @@ fn storage_failed(operation: &'static str, error: &DatabaseError) -> Response {
     clear_state_cookie(response)
 }
 
-fn signed_in(session: String) -> Response {
+/// Where a finished sign-in lands: a path on this origin, or the home page. A browser reads
+/// `//host` and `/\host` as another origin, and drops tabs and newlines before it looks, so
+/// the path starts with one slash and holds only visible ASCII without a backslash.
+fn return_path(requested: Option<&str>) -> &str {
+    requested
+        .filter(|path| {
+            path.len() <= MAX_RETURN_PATH_BYTES
+                && path.starts_with('/')
+                && !path.starts_with("//")
+                && path
+                    .bytes()
+                    .all(|byte| byte.is_ascii_graphic() && byte != b'\\')
+        })
+        .unwrap_or("/")
+}
+
+fn signed_in(session: String, return_path: &str) -> Response {
     clear_state_cookie(
         Response::builder()
             .status(StatusCode::FOUND)
-            .header("location", "/")
+            .header("location", return_path)
             .header(
                 "set-cookie",
                 ScopedCookie(SESSION_COOKIE).set(&session).to_string(),
@@ -171,12 +193,13 @@ fn signed_in(session: String) -> Response {
 }
 
 #[poem::handler]
-async fn login(Data(auth): Data<&Arc<GithubAuth>>) -> Response {
+async fn login(Data(auth): Data<&Arc<GithubAuth>>, Query(sign_in): Query<SignIn>) -> Response {
     let state = random_token();
     let expires_at = Timestamp::now() + std::time::Duration::from_secs(ATTEMPT_SECONDS);
     if let Err(error) = crate::user::attempt::create(
         &auth.state.database,
         &blake3::hash(state.as_bytes()).to_hex(),
+        return_path(sign_in.return_to.as_deref()),
         expires_at,
     )
     .await
@@ -215,19 +238,19 @@ async fn callback(
         return clear_state_cookie(status(StatusCode::BAD_REQUEST));
     }
     let state_hash = blake3::hash(callback.state.as_bytes()).to_hex().to_string();
-    let valid =
+    let return_path =
         match crate::user::attempt::consume(&auth.state.database, &state_hash, Timestamp::now())
             .await
         {
-            Ok(valid) => valid,
+            Ok(return_path) => return_path,
             Err(error) => {
                 log_database_error("consume_auth_attempt", &error);
-                false
+                None
             }
         };
-    if !valid {
+    let Some(return_path) = return_path else {
         return clear_state_cookie(status(StatusCode::BAD_REQUEST));
-    }
+    };
     let token = match auth
         .client
         .post("https://github.com/login/oauth/access_token")
@@ -292,7 +315,7 @@ async fn callback(
         return storage_failed("create_session", &error);
     }
 
-    signed_in(session)
+    signed_in(session, &return_path)
 }
 
 #[poem::handler]
@@ -312,7 +335,10 @@ async fn logout(Data(auth): Data<&Arc<GithubAuth>>, request: &poem::Request) -> 
 
 #[cfg(debug_assertions)]
 #[poem::handler]
-async fn development_login(Data(auth): Data<&Arc<GithubAuth>>) -> Response {
+async fn development_login(
+    Data(auth): Data<&Arc<GithubAuth>>,
+    Query(sign_in): Query<SignIn>,
+) -> Response {
     if !matches!(
         std::env::var("ERROR_MENU_DEV_LOGIN").as_deref(),
         Ok("1" | "true" | "TRUE")
@@ -344,5 +370,33 @@ async fn development_login(Data(auth): Data<&Arc<GithubAuth>>) -> Response {
         return status(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    signed_in(session)
+    signed_in(session, return_path(sign_in.return_to.as_deref()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::return_path;
+
+    #[test]
+    fn a_path_on_this_origin_is_kept_with_its_query() {
+        let path = "/projects/0Gw66v1CVtY/change/2?head=ecfb6bdcbe30cbb385e4b2fc948381c161a0a037";
+
+        assert_eq!(return_path(Some(path)), path);
+    }
+
+    #[test]
+    fn anything_a_browser_could_read_as_another_origin_lands_home() {
+        for requested in [
+            "https://evil.example/",
+            "//evil.example/",
+            "/\\evil.example/",
+            "/\t/evil.example/",
+            "/\r\nset-cookie: a=b",
+            "evil.example",
+            "",
+        ] {
+            assert_eq!(return_path(Some(requested)), "/", "{requested:?}");
+        }
+        assert_eq!(return_path(None), "/");
+    }
 }

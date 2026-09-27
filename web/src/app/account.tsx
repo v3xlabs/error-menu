@@ -22,8 +22,6 @@ export const AccountProvider = (properties: { children?: JSX.Element; }) => {
   const [state, setState] = createSignal<AccountState>({ phase: "loading" });
 
   const reload = async (): Promise<void> => {
-    setState({ phase: "loading" });
-
     const result = await currentUser();
 
     if (result.ok) {

@@ -203,9 +203,6 @@ export const AdminPage = () => {
     <div class="space-y-8">
       <h1 class="text-lg font-semibold">Admin</h1>
       <Switch>
-        <Match when={account.state().phase === "loading"}>
-          <p class="text-sm text-slate-500 dark:text-slate-400" role="status">Checking account...</p>
-        </Match>
         <Match when={account.user()?.role !== "admin"}>
           <p class="text-sm text-slate-600 dark:text-slate-300">You do not have access to this page.</p>
         </Match>

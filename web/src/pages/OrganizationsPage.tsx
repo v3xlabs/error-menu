@@ -8,7 +8,6 @@ import { AddOrganizationModal } from "../components/AddOrganizationModal";
 
 type OrganizationsState
   = | { phase: "loading"; }
-    | { phase: "anonymous"; }
     | { phase: "loaded"; organizations: readonly Organization[]; }
     | { phase: "error"; message: string; };
 
@@ -16,9 +15,6 @@ const renderOrganizations = (state: OrganizationsState): JSX.Element => {
   switch (state.phase) {
     case "loading": {
       return <p class="text-sm text-slate-500 dark:text-slate-500">Loading organizations...</p>;
-    }
-    case "anonymous": {
-      return <p class="rounded-panel bg-surface px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-500">Sign in to view organizations.</p>;
     }
     case "error": {
       return <p class="text-sm text-red-600 dark:text-red-400" role="alert">{state.message}</p>;
@@ -79,28 +75,15 @@ export const OrganizationsPage = () => {
   createEffect(
     () => account.state(),
     (accountState) => {
-      switch (accountState.phase) {
-        case "loaded": {
-          void load();
+      if (accountState.phase === "loaded") {
+        void load();
 
-          return;
-        }
-        case "anonymous": {
-          latestLoad += 1;
-          setState({ phase: "anonymous" });
+        return;
+      }
 
-          return;
-        }
-        case "error": {
-          latestLoad += 1;
-          setState({ phase: "error", message: accountState.message });
-
-          return;
-        }
-        case "loading": {
-          latestLoad += 1;
-          setState({ phase: "loading" });
-        }
+      if (accountState.phase === "error") {
+        latestLoad += 1;
+        setState({ phase: "error", message: accountState.message });
       }
     },
   );
