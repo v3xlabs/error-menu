@@ -20,6 +20,13 @@ moves, changed sources, and changed integrity data.
 it matched, because a match is already in the repository's history. The API links each finding
 with a line to that line at the snapshot head on the project's forge.
 
+It recognises the prefixed token formats of AWS, GitHub, GitLab, Slack, Stripe (live keys),
+Google, OpenAI, Anthropic, npm, PyPI, Hugging Face, Shopify and SendGrid, and private key
+blocks. A prefix counts only at the start of a word, and the body must have the length and
+characters the issuer publishes. A line with none of these falls back to a high-entropy quoted
+value assigned to a key whose name contains a word such as `secret`, `token` or `password`. Each
+line reports at most one finding.
+
 `link-inventory` inventories the full base and head trees. It preserves each link exactly as it
 appears with its path, line, and site kind. It reports only added links and emits `LinksAdded`.
 

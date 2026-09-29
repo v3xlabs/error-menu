@@ -5,14 +5,258 @@ use crate::prelude::*;
 
 pub const ANALYZER: &str = "secret-scan";
 
-const AWS_ACCESS_KEY_PREFIX: &str = "AKIA";
-const AWS_ACCESS_KEY_LENGTH: usize = 20;
-const GITHUB_TOKEN_PREFIXES: [&str; 3] = ["ghp_", "github_pat_", "gho_"];
-const GITHUB_TOKEN_MIN_BODY: usize = 30;
 const PRIVATE_KEY_OPENING: &str = "-----BEGIN ";
 const PRIVATE_KEY_CLOSING: &str = " PRIVATE KEY-----";
-const SLACK_TOKEN_PREFIX: &str = "xox";
-const SLACK_TOKEN_MIN_LENGTH: usize = 20;
+
+/// A credential its issuer marks with a fixed prefix, so the prefix names what it is. The
+/// prefix must start a word and the body must end one, so a prefix inside an identifier is
+/// not read as a token.
+struct TokenFormat {
+    rule: &'static str,
+    title: &'static str,
+    kind: &'static str,
+    severity: Severity,
+    confidence: f32,
+    prefixes: &'static [&'static str],
+    alphabet: Alphabet,
+    length: Length,
+}
+
+#[derive(Clone, Copy)]
+enum Alphabet {
+    UpperDigit,
+    Letters,
+    Alphanumeric,
+    Hex,
+    Word,
+    WordDash,
+    WordDashDot,
+}
+
+#[derive(Clone, Copy)]
+enum Length {
+    Exactly(usize),
+    AtLeast(usize),
+}
+
+/// Prefixes and body lengths follow the formats the issuers publish, as the gitleaks rule set
+/// records them. A body may be longer where an issuer has lengthened its tokens before.
+const TOKEN_FORMATS: &[TokenFormat] = &[
+    TokenFormat {
+        rule: "aws-access-key",
+        title: "AWS access key added to source",
+        kind: "an AWS access key",
+        severity: Severity::Critical,
+        confidence: 0.99,
+        prefixes: &["AKIA", "ASIA", "ABIA", "ACCA"],
+        alphabet: Alphabet::UpperDigit,
+        length: Length::Exactly(16),
+    },
+    TokenFormat {
+        rule: "github-token",
+        title: "GitHub token added to source",
+        kind: "a GitHub token",
+        severity: Severity::High,
+        confidence: 0.98,
+        prefixes: &["ghp_", "gho_", "ghu_", "ghs_", "ghr_"],
+        alphabet: Alphabet::Alphanumeric,
+        length: Length::AtLeast(36),
+    },
+    TokenFormat {
+        rule: "github-token",
+        title: "GitHub token added to source",
+        kind: "a fine-grained GitHub token",
+        severity: Severity::High,
+        confidence: 0.98,
+        prefixes: &["github_pat_"],
+        alphabet: Alphabet::Word,
+        length: Length::AtLeast(82),
+    },
+    TokenFormat {
+        rule: "gitlab-token",
+        title: "GitLab token added to source",
+        kind: "a GitLab personal access token",
+        severity: Severity::High,
+        confidence: 0.98,
+        prefixes: &["glpat-"],
+        // A routable token carries a dotted suffix that is part of the token.
+        alphabet: Alphabet::WordDashDot,
+        length: Length::AtLeast(20),
+    },
+    TokenFormat {
+        rule: "slack-token",
+        title: "Slack token added to source",
+        kind: "a Slack token",
+        severity: Severity::High,
+        confidence: 0.97,
+        prefixes: &[
+            "xoxa-", "xoxb-", "xoxc-", "xoxd-", "xoxe-", "xoxo-", "xoxp-", "xoxr-", "xoxs-",
+        ],
+        alphabet: Alphabet::WordDash,
+        length: Length::AtLeast(15),
+    },
+    TokenFormat {
+        rule: "stripe-secret-key",
+        title: "Stripe secret key added to source",
+        kind: "a live Stripe secret key",
+        severity: Severity::Critical,
+        confidence: 0.98,
+        prefixes: &["sk_live_", "rk_live_", "sk_prod_", "rk_prod_"],
+        alphabet: Alphabet::Alphanumeric,
+        length: Length::AtLeast(24),
+    },
+    TokenFormat {
+        rule: "google-api-key",
+        title: "Google API key added to source",
+        kind: "a Google API key",
+        severity: Severity::High,
+        confidence: 0.95,
+        prefixes: &["AIza"],
+        alphabet: Alphabet::WordDash,
+        length: Length::Exactly(35),
+    },
+    TokenFormat {
+        rule: "openai-api-key",
+        title: "OpenAI API key added to source",
+        kind: "an OpenAI API key",
+        severity: Severity::High,
+        confidence: 0.97,
+        prefixes: &["sk-proj-", "sk-svcacct-", "sk-admin-"],
+        alphabet: Alphabet::WordDash,
+        length: Length::AtLeast(64),
+    },
+    TokenFormat {
+        rule: "anthropic-api-key",
+        title: "Anthropic API key added to source",
+        kind: "an Anthropic API key",
+        severity: Severity::High,
+        confidence: 0.98,
+        prefixes: &["sk-ant-api03-", "sk-ant-admin01-"],
+        alphabet: Alphabet::WordDash,
+        length: Length::AtLeast(64),
+    },
+    TokenFormat {
+        rule: "npm-token",
+        title: "npm token added to source",
+        kind: "an npm access token",
+        severity: Severity::High,
+        confidence: 0.97,
+        prefixes: &["npm_"],
+        alphabet: Alphabet::Alphanumeric,
+        length: Length::Exactly(36),
+    },
+    TokenFormat {
+        rule: "pypi-token",
+        title: "PyPI token added to source",
+        kind: "a PyPI upload token",
+        severity: Severity::High,
+        confidence: 0.98,
+        // The macaroon header every PyPI token opens with, in base64.
+        prefixes: &["pypi-AgEIcHlwaS5vcmc"],
+        alphabet: Alphabet::WordDash,
+        length: Length::AtLeast(50),
+    },
+    TokenFormat {
+        rule: "huggingface-token",
+        title: "Hugging Face token added to source",
+        kind: "a Hugging Face access token",
+        severity: Severity::High,
+        confidence: 0.95,
+        prefixes: &["hf_"],
+        alphabet: Alphabet::Letters,
+        length: Length::Exactly(34),
+    },
+    TokenFormat {
+        rule: "shopify-token",
+        title: "Shopify access token added to source",
+        kind: "a Shopify access token",
+        severity: Severity::High,
+        confidence: 0.97,
+        prefixes: &["shpat_", "shpca_", "shppa_", "shpss_"],
+        alphabet: Alphabet::Hex,
+        length: Length::Exactly(32),
+    },
+    TokenFormat {
+        rule: "sendgrid-api-key",
+        title: "SendGrid API key added to source",
+        kind: "a SendGrid API key",
+        severity: Severity::High,
+        confidence: 0.95,
+        prefixes: &["SG."],
+        alphabet: Alphabet::WordDashDot,
+        length: Length::AtLeast(66),
+    },
+];
+
+impl TokenFormat {
+    /// The first token of this format on the line, with the prefix it starts with.
+    fn find<'line>(&self, line: &'line str) -> Option<(&'static str, &'line str)> {
+        let bytes = line.as_bytes();
+        self.prefixes.iter().find_map(|prefix| {
+            line.match_indices(prefix).find_map(|(start, _)| {
+                if start > 0 && bytes[start - 1].is_ascii_alphanumeric() {
+                    return None;
+                }
+                let body_start = start + prefix.len();
+                let body = bytes[body_start..]
+                    .iter()
+                    .take_while(|byte| self.alphabet.admits(**byte))
+                    .count();
+                let end = body_start + body;
+                let ends_a_word = bytes
+                    .get(end)
+                    .is_none_or(|byte| !byte.is_ascii_alphanumeric());
+                (ends_a_word && self.length.admits(body)).then(|| (*prefix, &line[start..end]))
+            })
+        })
+    }
+}
+
+impl Alphabet {
+    fn admits(self, byte: u8) -> bool {
+        match self {
+            Self::UpperDigit => byte.is_ascii_uppercase() || byte.is_ascii_digit(),
+            Self::Letters => byte.is_ascii_alphabetic(),
+            Self::Alphanumeric => byte.is_ascii_alphanumeric(),
+            Self::Hex => byte.is_ascii_hexdigit(),
+            Self::Word => byte.is_ascii_alphanumeric() || byte == b'_',
+            Self::WordDash => byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-',
+            Self::WordDashDot => {
+                byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' || byte == b'.'
+            }
+        }
+    }
+
+    fn described(self) -> &'static str {
+        match self {
+            Self::UpperDigit => "uppercase letters or digits",
+            Self::Letters => "letters",
+            Self::Alphanumeric => "letters or digits",
+            Self::Hex => "hexadecimal digits",
+            Self::Word => "letters, digits or underscores",
+            Self::WordDash => "letters, digits, dashes or underscores",
+            Self::WordDashDot => "letters, digits, dashes, underscores or dots",
+        }
+    }
+}
+
+impl Length {
+    fn admits(self, length: usize) -> bool {
+        match self {
+            Self::Exactly(expected) => length == expected,
+            Self::AtLeast(minimum) => length >= minimum,
+        }
+    }
+}
+
+impl std::fmt::Display for Length {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Exactly(expected) => write!(formatter, "{expected}"),
+            Self::AtLeast(minimum) => write!(formatter, "{minimum} or more"),
+        }
+    }
+}
 
 /// The finding one added line produces. The value is quoted in the detail: a match is
 /// already in the repository's history, so hiding it here protects nothing and leaves the
@@ -64,28 +308,21 @@ pub fn added_line_findings(path: &RepoPath, base: Option<&str>, head: &str) -> V
 }
 
 fn classify(line: &str) -> Option<Match> {
-    if let Some(key) = aws_access_key(line) {
+    if let Some((format, prefix, token)) = TOKEN_FORMATS.iter().find_map(|format| {
+        format
+            .find(line)
+            .map(|(prefix, token)| (format, prefix, token))
+    }) {
         return Some(Match {
-            rule: "aws-access-key",
-            title: "AWS access key added to source",
-            severity: Severity::Critical,
-            confidence: 0.99,
+            rule: format.rule,
+            title: format.title,
+            severity: format.severity,
+            confidence: format.confidence,
             detail: format!(
-                "{key} matches an AWS access key: {AWS_ACCESS_KEY_PREFIX} followed by {} \
-                 uppercase letters or digits.",
-                AWS_ACCESS_KEY_LENGTH - AWS_ACCESS_KEY_PREFIX.len()
-            ),
-        });
-    }
-    if let Some((prefix, token)) = github_token(line) {
-        return Some(Match {
-            rule: "github-token",
-            title: "GitHub token added to source",
-            severity: Severity::High,
-            confidence: 0.98,
-            detail: format!(
-                "{token} matches a GitHub token: {prefix} followed by {GITHUB_TOKEN_MIN_BODY} \
-                 or more letters or digits."
+                "{token} matches {}: {prefix} followed by {} {}.",
+                format.kind,
+                format.length,
+                format.alphabet.described()
             ),
         });
     }
@@ -96,18 +333,6 @@ fn classify(line: &str) -> Option<Match> {
             severity: Severity::Critical,
             confidence: 0.99,
             detail: format!("{header} opens a private key block."),
-        });
-    }
-    if let Some(token) = slack_token(line) {
-        return Some(Match {
-            rule: "slack-token",
-            title: "Slack token added to source",
-            severity: Severity::High,
-            confidence: 0.97,
-            detail: format!(
-                "{token} matches a Slack token: {SLACK_TOKEN_PREFIX} and {SLACK_TOKEN_MIN_LENGTH} \
-                 or more letters, digits, dashes or underscores."
-            ),
         });
     }
     let (key, value) = assigned_secret_value(line)?;
@@ -125,47 +350,10 @@ fn classify(line: &str) -> Option<Match> {
     })
 }
 
-fn aws_access_key(line: &str) -> Option<&str> {
-    line.as_bytes()
-        .windows(AWS_ACCESS_KEY_LENGTH)
-        .position(|candidate| {
-            candidate.starts_with(AWS_ACCESS_KEY_PREFIX.as_bytes())
-                && candidate[AWS_ACCESS_KEY_PREFIX.len()..]
-                    .iter()
-                    .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
-        })
-        .map(|start| &line[start..start + AWS_ACCESS_KEY_LENGTH])
-}
-
-fn github_token(line: &str) -> Option<(&'static str, &str)> {
-    GITHUB_TOKEN_PREFIXES.iter().find_map(|prefix| {
-        line.match_indices(prefix).find_map(|(start, _)| {
-            let body = line[start + prefix.len()..]
-                .bytes()
-                .take_while(u8::is_ascii_alphanumeric)
-                .count();
-            (body >= GITHUB_TOKEN_MIN_BODY)
-                .then(|| (*prefix, &line[start..start + prefix.len() + body]))
-        })
-    })
-}
-
 fn private_key_header(line: &str) -> Option<&str> {
     let end = line.find(PRIVATE_KEY_CLOSING)? + PRIVATE_KEY_CLOSING.len();
     let start = line[..end].rfind(PRIVATE_KEY_OPENING)?;
     Some(&line[start..end])
-}
-
-fn slack_token(line: &str) -> Option<&str> {
-    line.match_indices(SLACK_TOKEN_PREFIX)
-        .find_map(|(start, _)| {
-            let token = line[start..].split_whitespace().next()?;
-            (token.len() >= SLACK_TOKEN_MIN_LENGTH
-                && token
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'))
-            .then_some(token)
-        })
 }
 
 /// The first key on the line that names a secret, and the quoted value after it.
@@ -223,21 +411,87 @@ mod tests {
         RepoPath::new("src/config.rs").expect("path is valid")
     }
 
+    /// Fixtures are assembled at run time, so this file never holds a token-shaped literal
+    /// for a forge's push protection or for error.menu's own scan to report.
+    fn token(prefix: &str, alphabet: &str, length: usize) -> String {
+        format!(
+            "{prefix}{}",
+            alphabet.chars().cycle().take(length).collect::<String>()
+        )
+    }
+
+    fn findings_for(value: &str) -> Vec<NewFinding> {
+        added_line_findings(&path(), None, &format!("value = \"{value}\";"))
+    }
+
     #[test]
-    fn reports_an_added_aws_access_key() {
-        let findings = added_line_findings(
-            &path(),
-            Some("const name = \"app\";"),
-            "const key = \"AKIA0123456789ABCDEF\";",
+    fn reports_each_token_format_and_quotes_the_token() {
+        let fine_grained = format!(
+            "{}_{}",
+            token("github_pat_", "aZ9", 22),
+            token("", "aZ9", 59)
         );
-        assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].severity, Severity::Critical);
-        assert_eq!(findings[0].title, "AWS access key added to source");
-        assert!(
-            findings[0]
-                .detail
-                .starts_with("AKIA0123456789ABCDEF matches")
-        );
+        let routable_gitlab = format!("{}.{}", token("glpat-", "aZ9-", 27), token("", "01a", 9));
+        for (value, title) in [
+            (token("ASIA", "Z7", 16), "AWS access key added to source"),
+            (token("ghu_", "aZ9", 36), "GitHub token added to source"),
+            (fine_grained, "GitHub token added to source"),
+            (token("glpat-", "aZ9-", 20), "GitLab token added to source"),
+            (routable_gitlab, "GitLab token added to source"),
+            (
+                token("xoxb-", "1234567890-", 24),
+                "Slack token added to source",
+            ),
+            (
+                token("sk_live_", "aZ9", 24),
+                "Stripe secret key added to source",
+            ),
+            (token("AIza", "aZ9_-", 35), "Google API key added to source"),
+            (
+                token("sk-proj-", "aZ9_-", 100),
+                "OpenAI API key added to source",
+            ),
+            (
+                token("sk-ant-api03-", "aZ9_-", 95),
+                "Anthropic API key added to source",
+            ),
+            (token("npm_", "aZ9", 36), "npm token added to source"),
+            (
+                token("pypi-AgEIcHlwaS5vcmc", "aZ9_-", 60),
+                "PyPI token added to source",
+            ),
+            (token("hf_", "aZ", 34), "Hugging Face token added to source"),
+            (
+                token("shpat_", "a9f", 32),
+                "Shopify access token added to source",
+            ),
+            (
+                token("SG.", "aZ9_-.", 66),
+                "SendGrid API key added to source",
+            ),
+        ] {
+            let findings = findings_for(&value);
+            assert_eq!(findings.len(), 1, "{value}");
+            assert_eq!(findings[0].title, title, "{value}");
+            assert!(
+                findings[0].detail.starts_with(&format!("{value} matches")),
+                "{}",
+                findings[0].detail
+            );
+        }
+    }
+
+    #[test]
+    fn ignores_a_prefix_inside_a_longer_word() {
+        assert!(findings_for(&token("disk_live_", "aZ9", 30)).is_empty());
+        assert!(findings_for(&token("bghp_", "aZ9", 36)).is_empty());
+    }
+
+    #[test]
+    fn ignores_a_body_of_the_wrong_length_or_alphabet() {
+        assert!(findings_for(&token("AIza", "aZ9_-", 34)).is_empty());
+        assert!(findings_for(&token("shpat_", "a9g", 32)).is_empty());
+        assert!(findings_for(&token("ghp_", "aZ9", 35)).is_empty());
     }
 
     #[test]
@@ -263,28 +517,6 @@ mod tests {
             findings[1]
                 .detail
                 .starts_with("aB3!long-random-value-123 is assigned to api_secret:")
-        );
-    }
-
-    #[test]
-    fn reports_an_added_github_token() {
-        let token = "ghp_abcdefghijklmnopqrstuvwxyz1234567890";
-        let findings = added_line_findings(&path(), None, &format!("const token = \"{token}\";"));
-        assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].severity, Severity::High);
-        assert!(findings[0].detail.starts_with(&format!("{token} matches")));
-    }
-
-    #[test]
-    fn reports_an_added_slack_token() {
-        let findings =
-            added_line_findings(&path(), None, "SLACK_TOKEN=xoxb-1234567890-abcdefghijkl");
-        assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].title, "Slack token added to source");
-        assert!(
-            findings[0]
-                .detail
-                .starts_with("xoxb-1234567890-abcdefghijkl matches")
         );
     }
 
