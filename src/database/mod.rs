@@ -16,6 +16,8 @@ pub struct Database {
     pub ids: IdGenerator,
 }
 
+const REQUEST_CONNECTIONS: u32 = 4;
+
 impl Database {
     pub async fn open(url: &str, node: u16) -> Result<Self, DatabaseError> {
         let options = SqliteConnectOptions::from_str(url)?
@@ -34,7 +36,13 @@ impl Database {
             // this file is. Sorting in memory needs no such directory.
             .pragma("temp_store", "MEMORY")
             .busy_timeout(Duration::from_secs(10));
-        let max_connections = if url == "sqlite::memory:" { 1 } else { 4 };
+        // Every worker can hold a connection while it waits for the writer, so requests
+        // need room of their own beside them or a burst of claims stalls every page.
+        let max_connections = if url == "sqlite::memory:" {
+            1
+        } else {
+            crate::worker::resource::POOL as u32 + REQUEST_CONNECTIONS
+        };
         let pool = SqlitePoolOptions::new()
             .max_connections(max_connections)
             .connect_with(options)

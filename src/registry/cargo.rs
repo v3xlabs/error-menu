@@ -2,8 +2,9 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use super::{PackageFacts, ReadError, get};
+use super::{PackageFacts, ReadError, get, osv};
 use crate::prelude::*;
+use crate::worker::resource::Resource;
 
 const CRATES: &str = "https://crates.io/api/v1/crates";
 const DOCS: &str = "https://docs.rs/crate";
@@ -13,20 +14,36 @@ const DOCS: &str = "https://docs.rs/crate";
 /// holds the whole worker to that.
 const CRATES_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Three reads per version. The crate endpoint is called with `?include=` because without
-/// it crates.io embeds every published version: 440990 bytes for serde against 952.
+/// Two crates.io reads per version, then docs.rs and OSV. The crate endpoint is called with
+/// `?include=` because without it crates.io embeds every published version: 440990 bytes
+/// for serde against 952.
 pub(super) async fn read(
     client: &reqwest::Client,
     name: &str,
     version: &str,
 ) -> Result<PackageFacts, ReadError> {
     tokio::time::sleep(CRATES_INTERVAL).await;
-    let release: VersionResponse = get(client, &format!("{CRATES}/{name}/{version}")).await?;
+    let release: VersionResponse = get(
+        client,
+        Resource::CratesIo,
+        &format!("{CRATES}/{name}/{version}"),
+    )
+    .await?;
     tokio::time::sleep(CRATES_INTERVAL).await;
-    let published: CrateResponse = get(client, &format!("{CRATES}/{name}?include=")).await?;
-    let documented = get::<DocsStatus>(client, &format!("{DOCS}/{name}/{version}/status.json"))
-        .await
-        .is_ok_and(|status| status.doc_status);
+    let published: CrateResponse = get(
+        client,
+        Resource::CratesIo,
+        &format!("{CRATES}/{name}?include="),
+    )
+    .await?;
+    let documented = get::<DocsStatus>(
+        client,
+        Resource::CratesIo,
+        &format!("{DOCS}/{name}/{version}/status.json"),
+    )
+    .await
+    .is_ok_and(|status| status.doc_status);
+    let advisories = osv::crate_advisories(client, name, version).await?;
 
     Ok(PackageFacts {
         size_bytes: Some(release.version.crate_size),
@@ -38,12 +55,14 @@ pub(super) async fn read(
             .yanked
             .then(|| "yanked from crates.io".to_owned()),
         downloads_week: None,
-        documentation: published
-            .krate
-            .documentation
-            .or_else(|| documented.then(|| format!("https://docs.rs/{name}/{version}"))),
+        // docs.rs names the exact version; a crate's own documentation field usually
+        // points at the latest one.
+        documentation: documented
+            .then(|| format!("https://docs.rs/{name}/{version}"))
+            .or(published.krate.documentation),
         repository: published.krate.repository,
         homepage: published.krate.homepage,
+        advisories,
         ..PackageFacts::known(Ecosystem::Cargo, name, version)
     })
 }

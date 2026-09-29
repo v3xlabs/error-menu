@@ -62,7 +62,7 @@ export const FindingLine = (properties: { finding: Finding; }) => (
     <span class={style(properties.finding)}>{icon(properties.finding)}</span>
     <span class={["min-w-0 wrap-anywhere", style(properties.finding)]}>{detail(properties.finding)}</span>
     <Show when={properties.finding.package}>
-      {item => <PackageTail package={item()} />}
+      {item => <PackageTail package={item()} withRegistry={false} />}
     </Show>
     <Show when={properties.finding.line_start}>
       {line => (
@@ -104,6 +104,9 @@ export const PackageLine = (properties: { finding: Finding; name: string; versio
             {link().url}
           </CheckedLink>
         )}
+      </Show>
+      <Show when={properties.finding.package}>
+        {item => <PackageTail package={item()} withRegistry />}
       </Show>
     </span>
     <span aria-hidden="true" class="tabular-nums opacity-80">{properties.version}</span>

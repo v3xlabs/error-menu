@@ -2771,6 +2771,20 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AdvisoryOutput
+         * @description `url` is built from the id on read: OSV lists every id npmx and crates.io report.
+         */
+        AdvisoryOutput: {
+            advisory_id: string;
+            aliases: string[];
+            severity: components["schemas"]["AdvisorySeverityOutput"];
+            summary?: string;
+            fixed_in?: string;
+            url: components["schemas"]["LinkOutput"];
+        };
+        /** @enum {string} */
+        AdvisorySeverityOutput: "critical" | "high" | "moderate" | "low" | "informational" | "unrated";
         /** AnalysesOutput */
         AnalysesOutput: {
             analyses: components["schemas"]["AnalysisOutput"][];
@@ -2963,11 +2977,16 @@ export interface components {
          *     refused" are different answers.
          * @enum {string}
          */
-        JobKindOutput: "discover" | "package_facts";
-        /** JobOutput */
+        JobKindOutput: "discover" | "package_facts" | "package_audit";
+        /**
+         * JobOutput
+         * @description `subject` is what the job is about: a project id for project work, and `npm:name@1.2.3`
+         *     for a package version, which belongs to no project and so has no `project_id`.
+         */
         JobOutput: {
             job_id: string;
-            project_id: string;
+            project_id?: string;
+            subject: string;
             kind: components["schemas"]["JobKindOutput"];
             state: components["schemas"]["JobStateOutput"];
             /** Format: uint32 */
@@ -3039,10 +3058,7 @@ export interface components {
             dependency_count?: number;
             /** Format: uint64 */
             downloads_week?: number;
-            /** Format: uint32 */
-            vulnerabilities?: number;
-            /** Format: uint32 */
-            vulnerabilities_high?: number;
+            advisories: components["schemas"]["AdvisoryOutput"][];
             license?: string;
             withdrawn?: string;
         };

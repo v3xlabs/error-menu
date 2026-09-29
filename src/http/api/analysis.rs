@@ -16,7 +16,7 @@ use crate::http::api::{
 };
 use crate::http::auth::CurrentUser;
 use crate::prelude::*;
-use crate::registry::PackageFacts;
+use crate::registry::{Advisory, AdvisorySeverity, PackageFacts};
 use crate::worker::discovery;
 
 /// Registry facts for one project, keyed by the coordinate a finding names.
@@ -388,10 +388,32 @@ struct PackageFactsOutput {
     install_bytes: Option<u64>,
     dependency_count: Option<u32>,
     downloads_week: Option<u64>,
-    vulnerabilities: Option<u32>,
-    vulnerabilities_high: Option<u32>,
+    advisories: Vec<AdvisoryOutput>,
     license: Option<String>,
     withdrawn: Option<String>,
+}
+
+/// `url` is built from the id on read: OSV lists every id npmx and crates.io report.
+#[derive(Debug, Object)]
+#[oai(skip_serializing_if_is_none)]
+struct AdvisoryOutput {
+    advisory_id: String,
+    aliases: Vec<String>,
+    severity: AdvisorySeverityOutput,
+    summary: Option<String>,
+    fixed_in: Option<String>,
+    url: LinkOutput,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
+#[oai(rename_all = "snake_case")]
+enum AdvisorySeverityOutput {
+    Critical,
+    High,
+    Moderate,
+    Low,
+    Informational,
+    Unrated,
 }
 
 #[derive(Debug, Object)]
@@ -931,10 +953,27 @@ fn facts_output(facts: &PackageFacts) -> PackageFactsOutput {
         install_bytes: facts.install_bytes,
         dependency_count: facts.dependency_count,
         downloads_week: facts.downloads_week,
-        vulnerabilities: facts.vulnerabilities,
-        vulnerabilities_high: facts.vulnerabilities_high,
+        advisories: facts.advisories.iter().map(advisory_output).collect(),
         license: facts.license.clone(),
         withdrawn: facts.withdrawn.clone(),
+    }
+}
+
+fn advisory_output(advisory: &Advisory) -> AdvisoryOutput {
+    AdvisoryOutput {
+        url: checked_link(format!("https://osv.dev/vulnerability/{}", advisory.id)),
+        advisory_id: advisory.id.clone(),
+        aliases: advisory.aliases.clone(),
+        severity: match advisory.severity {
+            AdvisorySeverity::Critical => AdvisorySeverityOutput::Critical,
+            AdvisorySeverity::High => AdvisorySeverityOutput::High,
+            AdvisorySeverity::Moderate => AdvisorySeverityOutput::Moderate,
+            AdvisorySeverity::Low => AdvisorySeverityOutput::Low,
+            AdvisorySeverity::Informational => AdvisorySeverityOutput::Informational,
+            AdvisorySeverity::Unrated => AdvisorySeverityOutput::Unrated,
+        },
+        summary: advisory.summary.clone(),
+        fixed_in: advisory.fixed_in.clone(),
     }
 }
 

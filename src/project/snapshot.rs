@@ -308,10 +308,10 @@ impl Snapshot {
             .transpose()
     }
 
-    /// Snapshots of this project whose public-registry packages recorded an integrity, have
-    /// an answer from the registry for every one of them, and have not been audited yet. The
-    /// audit run is its own record that it happened, so it must not be written while a
-    /// coordinate is unanswered: that coordinate would never be compared.
+    /// Snapshots of this project that name a public-registry package, have an answer from
+    /// the registry for every one of them, and have not had this audit yet. The audit run is
+    /// its own record that it happened, so it must not be written while a coordinate is
+    /// unanswered: that coordinate would never be looked at.
     pub async fn awaiting_audit(
         database: &Database,
         project_id: Id<Project>,
@@ -322,15 +322,15 @@ impl Snapshot {
              JOIN subjects s ON s.id = n.subject_id \
              JOIN runs r ON r.snapshot_id = n.id \
              JOIN findings f ON f.run_id = r.id \
-             WHERE s.project_id = ? AND f.package_integrity IS NOT NULL \
-               AND f.origin_kind = 'public_registry' \
+             WHERE s.project_id = ? AND f.location_kind = 'package' \
+               AND f.origin_kind = 'public_registry' AND f.ecosystem <> 'nix' \
                AND NOT EXISTS ( \
                    SELECT 1 FROM runs a WHERE a.snapshot_id = n.id AND a.analyzer = ? \
                ) \
                AND NOT EXISTS ( \
                    SELECT 1 FROM runs ur JOIN findings u ON u.run_id = ur.id \
-                   WHERE ur.snapshot_id = n.id AND u.package_integrity IS NOT NULL \
-                     AND u.origin_kind = 'public_registry' \
+                   WHERE ur.snapshot_id = n.id AND u.location_kind = 'package' \
+                     AND u.origin_kind = 'public_registry' AND u.ecosystem <> 'nix' \
                      AND NOT EXISTS ( \
                          SELECT 1 FROM package_facts p \
                          WHERE p.ecosystem = u.ecosystem AND p.name = u.package_name \

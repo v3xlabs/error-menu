@@ -55,7 +55,7 @@ const FileRow = (properties: { file: RunFile; }) => {
           <ul class="space-y-0.5 px-3 pb-2.5 pl-14">
             <For each={properties.file.findings}>
               {finding => (
-                <Show when={finding.package} fallback={<FindingLine finding={finding} />}>
+                <Show when={finding.movement === undefined ? undefined : finding.package} fallback={<FindingLine finding={finding} />}>
                   {known => <PackageLine finding={finding} name={known().name} version={known().version} />}
                 </Show>
               )}
@@ -73,7 +73,9 @@ export const AnalyzerCard = (properties: { run: AnalyzerRun; }) => {
   // Grouping walks every finding, and one lockfile run can carry ten thousand of them.
   const breakdown = createMemo<Breakdown>(() => {
     const findings = properties.run.findings;
-    const byPackage = findings.length > 0 && findings.every(finding => finding.package !== undefined);
+    // An audit names packages without moving them, so its findings read as sentences.
+    const byPackage = findings.some(finding => finding.movement !== undefined)
+      && findings.every(finding => finding.package !== undefined);
 
     if (byPackage) {
       const files = dependencyFiles(findings);

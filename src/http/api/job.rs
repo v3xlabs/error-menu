@@ -9,7 +9,7 @@ use crate::http::api::{
 };
 use crate::http::auth::CurrentUser;
 use crate::prelude::*;
-use crate::worker::queue::Job;
+use crate::worker::queue::{Job, JobState, Work};
 
 const JOB_PAGE: i64 = 50;
 
@@ -82,6 +82,7 @@ impl JobApi {
 enum JobKindOutput {
     Discover,
     PackageFacts,
+    PackageAudit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
@@ -93,11 +94,14 @@ enum JobStateOutput {
     Failed,
 }
 
+/// `subject` is what the job is about: a project id for project work, and `npm:name@1.2.3`
+/// for a package version, which belongs to no project and so has no `project_id`.
 #[derive(Debug, Object)]
 #[oai(skip_serializing_if_is_none)]
 struct JobOutput {
     job_id: String,
-    project_id: String,
+    project_id: Option<String>,
+    subject: String,
     kind: JobKindOutput,
     state: JobStateOutput,
     attempts: u32,
@@ -132,16 +136,18 @@ enum ListJobsResponse {
 fn job_output(job: Job) -> JobOutput {
     JobOutput {
         job_id: job.id.encode(),
-        project_id: job.project_id.encode(),
-        kind: match job.kind {
-            crate::worker::queue::JobKind::Discover => JobKindOutput::Discover,
-            crate::worker::queue::JobKind::PackageFacts => JobKindOutput::PackageFacts,
+        project_id: job.work.project_id().map(|project_id| project_id.encode()),
+        subject: job.work.subject(),
+        kind: match job.work {
+            Work::Discover { .. } => JobKindOutput::Discover,
+            Work::PackageFacts(_) => JobKindOutput::PackageFacts,
+            Work::PackageAudit { .. } => JobKindOutput::PackageAudit,
         },
         state: match job.state {
-            crate::worker::queue::JobState::Queued => JobStateOutput::Queued,
-            crate::worker::queue::JobState::Running => JobStateOutput::Running,
-            crate::worker::queue::JobState::Done => JobStateOutput::Done,
-            crate::worker::queue::JobState::Failed => JobStateOutput::Failed,
+            JobState::Queued => JobStateOutput::Queued,
+            JobState::Running => JobStateOutput::Running,
+            JobState::Done => JobStateOutput::Done,
+            JobState::Failed => JobStateOutput::Failed,
         },
         attempts: job.attempts.max(0) as u32,
         last_error: job.last_error,

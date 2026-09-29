@@ -388,7 +388,7 @@ fn movement(departures: &[&LockedPackage], arrival: &LockedPackage) -> (VersionM
 /// pre-release after `-` sorts below its release, so 1.0.0-beta.5 precedes 1.0.0. Answers
 /// `None` unless both sides start with a number, because a flake.lock pins a commit sha
 /// where one revision is neither above nor below another.
-fn compare_versions(left: &str, right: &str) -> Option<Ordering> {
+pub(crate) fn compare_versions(left: &str, right: &str) -> Option<Ordering> {
     let (left_core, left_pre_release) = precedence_parts(left)?;
     let (right_core, right_pre_release) = precedence_parts(right)?;
 
