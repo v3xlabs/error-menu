@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { FiAlertTriangle, FiFileText } from "solid-icons/fi";
+import { FiAlertTriangle, FiExternalLink, FiFileText } from "solid-icons/fi";
 import { Show } from "solid-js";
 
 import type { Analysis } from "../api/projects";
@@ -28,8 +28,7 @@ const icon = (finding: Finding): JSX.Element => {
   return MOVEMENT_ICONS[finding.movement]();
 };
 
-const location = (finding: Finding): string =>
-  (finding.line_start === undefined ? finding.path : `${finding.path}:${finding.line_start}`);
+const LINE_LINK = "inline-flex shrink-0 items-center gap-0.5 font-mono text-slate-500 underline decoration-slate-300 underline-offset-2 hover:text-slate-900 dark:text-slate-400 dark:decoration-slate-600 dark:hover:text-slate-100";
 
 // The sentence already names the package, so the registry link is that name rather than a
 // second copy of it beside the row.
@@ -58,15 +57,33 @@ const detail = (finding: Finding): JSX.Element => {
   );
 };
 
-export const FindingLine = (properties: { finding: Finding; showLocation?: boolean; }) => (
+export const FindingLine = (properties: { finding: Finding; }) => (
   <li class="flex items-baseline gap-1.5 text-xs">
     <span class={style(properties.finding)}>{icon(properties.finding)}</span>
-    <span class={style(properties.finding)}>{detail(properties.finding)}</span>
+    <span class={["min-w-0 wrap-anywhere", style(properties.finding)]}>{detail(properties.finding)}</span>
     <Show when={properties.finding.package}>
       {item => <PackageTail package={item()} />}
     </Show>
-    <Show when={properties.showLocation === true && properties.finding.package === undefined}>
-      <span class="shrink-0 font-mono text-slate-400 dark:text-slate-500">{location(properties.finding)}</span>
+    <Show when={properties.finding.line_start}>
+      {line => (
+        <Show
+          when={properties.finding.url}
+          fallback={<span class="shrink-0 font-mono text-slate-400 dark:text-slate-500">{`L${line()}`}</span>}
+        >
+          {url => (
+            <a
+              href={url()}
+              target="_blank"
+              rel="noreferrer"
+              class={LINE_LINK}
+              title={`Open line ${line()} at this commit`}
+            >
+              {`L${line()}`}
+              <FiExternalLink size={10} />
+            </a>
+          )}
+        </Show>
+      )}
     </Show>
   </li>
 );

@@ -16,8 +16,9 @@ moves, changed sources, and changed integrity data.
 
 `manifest-delta` compares `Cargo.toml` and `package.json` dependency declarations.
 
-`secret-scan` examines added lines only. It reports credential-shaped values without storing the
-matched value.
+`secret-scan` examines added lines only. Each finding quotes the matched value and the pattern
+it matched, because a match is already in the repository's history. The API links each finding
+with a line to that line at the snapshot head on the project's forge.
 
 `link-inventory` inventories the full base and head trees. It preserves each link exactly as it
 appears with its path, line, and site kind. It reports only added links and emits `LinksAdded`.

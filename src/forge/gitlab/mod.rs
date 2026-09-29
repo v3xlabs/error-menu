@@ -22,6 +22,8 @@ impl Forge for Gitlab {
         format!("refs/merge-requests/{number}/head")
     }
 
+    const FILE_AT_COMMIT: &'static [&'static str] = &["-", "blob"];
+
     /// GitLab names a project by its id or by its path encoded as one segment, so the
     /// numeric id it would cost a request to learn is never needed here.
     async fn changes(api: &Api<'_>) -> Result<Vec<DiscoveredChange>, ForgeReadError> {

@@ -34,6 +34,8 @@ impl Forge for Github {
         format!("refs/pull/{number}/head")
     }
 
+    const FILE_AT_COMMIT: &'static [&'static str] = &["blob"];
+
     /// The OAuth app that signs users in reads public data on its own budget of five
     /// thousand an hour, against the sixty a source address gets anonymously. It is the
     /// same registration either way, so a deployment that can sign users in can already

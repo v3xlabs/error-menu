@@ -9,6 +9,7 @@ use crate::analysis::{CompletedRun, SnapshotAnalysis, ci_checks, runner};
 use crate::app::AppState;
 use crate::database::codec::StoredAs;
 use crate::forge::ChangeState;
+use crate::forge::reader::Repository;
 use crate::http::MOUNT;
 use crate::http::api::{
     Error, ProjectAccess, ProjectPermission, forbidden, missing_project, project_access,
@@ -20,6 +21,13 @@ use crate::worker::discovery;
 
 /// Registry facts for one project, keyed by the coordinate a finding names.
 type FactsIndex = BTreeMap<(&'static str, String, String), PackageFacts>;
+
+/// What one project's findings are joined to on read: its registry facts, and the forge
+/// that can show a line, which is absent when the project's forge cannot be told.
+struct ReadContext {
+    facts: FactsIndex,
+    repository: Option<Repository>,
+}
 
 pub struct AnalysisApi {
     pub state: Arc<AppState>,
@@ -41,25 +49,28 @@ impl AnalysisApi {
                 }));
             }
         };
-        match project_access(&self.state, &user, project_id, ProjectPermission::Viewer).await {
-            ProjectAccess::Allowed { .. } => {}
-            ProjectAccess::Forbidden => return ListAnalysesResponse::Forbidden(Json(forbidden())),
-            ProjectAccess::Missing => {
-                return ListAnalysesResponse::Missing(Json(missing_project()));
-            }
-            ProjectAccess::Failed(message) => {
-                return ListAnalysesResponse::Failed(Json(Error { message }));
-            }
-        }
-        let facts = match facts_index(&self.state.database, project_id).await {
-            Ok(facts) => facts,
+        let project =
+            match project_access(&self.state, &user, project_id, ProjectPermission::Viewer).await {
+                ProjectAccess::Allowed { project, .. } => project,
+                ProjectAccess::Forbidden => {
+                    return ListAnalysesResponse::Forbidden(Json(forbidden()));
+                }
+                ProjectAccess::Missing => {
+                    return ListAnalysesResponse::Missing(Json(missing_project()));
+                }
+                ProjectAccess::Failed(message) => {
+                    return ListAnalysesResponse::Failed(Json(Error { message }));
+                }
+            };
+        let context = match read_context(&self.state.database, &project).await {
+            Ok(context) => context,
             Err(message) => return ListAnalysesResponse::Failed(Json(Error { message })),
         };
         match SnapshotAnalysis::for_project(&self.state.database, project_id).await {
             Ok(analyses) => ListAnalysesResponse::Found(Json(AnalysesOutput {
                 analyses: analyses
                     .into_iter()
-                    .map(|analysis| analysis_output(analysis, &facts))
+                    .map(|analysis| analysis_output(analysis, &context))
                     .collect(),
             })),
             Err(error) => ListAnalysesResponse::Failed(Json(Error {
@@ -82,18 +93,20 @@ impl AnalysisApi {
                 }));
             }
         };
-        match project_access(&self.state, &user, project_id, ProjectPermission::Operator).await {
-            ProjectAccess::Allowed { .. } => {}
-            ProjectAccess::Forbidden => {
-                return DiscoverProjectResponse::Forbidden(Json(forbidden()));
-            }
-            ProjectAccess::Missing => {
-                return DiscoverProjectResponse::Missing(Json(missing_project()));
-            }
-            ProjectAccess::Failed(message) => {
-                return DiscoverProjectResponse::Failed(Json(Error { message }));
-            }
-        }
+        let project =
+            match project_access(&self.state, &user, project_id, ProjectPermission::Operator).await
+            {
+                ProjectAccess::Allowed { project, .. } => project,
+                ProjectAccess::Forbidden => {
+                    return DiscoverProjectResponse::Forbidden(Json(forbidden()));
+                }
+                ProjectAccess::Missing => {
+                    return DiscoverProjectResponse::Missing(Json(missing_project()));
+                }
+                ProjectAccess::Failed(message) => {
+                    return DiscoverProjectResponse::Failed(Json(Error { message }));
+                }
+            };
         let discovery = match discovery::run(&self.state, project_id).await {
             Ok(discovery) => discovery,
             Err(discovery::DiscoveryError::ProjectNotFound) => {
@@ -105,7 +118,7 @@ impl AnalysisApi {
                 }));
             }
         };
-        match discovery_output(&self.state.database, project_id, discovery).await {
+        match discovery_output(&self.state.database, &project, discovery).await {
             Ok(output) => DiscoverProjectResponse::Found(Json(output)),
             Err(message) => DiscoverProjectResponse::Failed(Json(Error { message })),
         }
@@ -126,18 +139,20 @@ impl AnalysisApi {
                 }));
             }
         };
-        match project_access(&self.state, &user, project_id, ProjectPermission::Operator).await {
-            ProjectAccess::Allowed { .. } => {}
-            ProjectAccess::Forbidden => {
-                return AnalyzeProjectResponse::Forbidden(Json(forbidden()));
-            }
-            ProjectAccess::Missing => {
-                return AnalyzeProjectResponse::Missing(Json(missing_project()));
-            }
-            ProjectAccess::Failed(message) => {
-                return AnalyzeProjectResponse::Failed(Json(Error { message }));
-            }
-        }
+        let project =
+            match project_access(&self.state, &user, project_id, ProjectPermission::Operator).await
+            {
+                ProjectAccess::Allowed { project, .. } => project,
+                ProjectAccess::Forbidden => {
+                    return AnalyzeProjectResponse::Forbidden(Json(forbidden()));
+                }
+                ProjectAccess::Missing => {
+                    return AnalyzeProjectResponse::Missing(Json(missing_project()));
+                }
+                ProjectAccess::Failed(message) => {
+                    return AnalyzeProjectResponse::Failed(Json(Error { message }));
+                }
+            };
         let base = match input.0.base_sha.as_deref().map(CommitSha::new).transpose() {
             Ok(base) => base,
             Err(error) => {
@@ -156,8 +171,8 @@ impl AnalysisApi {
         };
         match runner::run(&self.state, project_id, base, head).await {
             Ok(analysis) => {
-                let facts = match facts_index(&self.state.database, project_id).await {
-                    Ok(facts) => facts,
+                let context = match read_context(&self.state.database, &project).await {
+                    Ok(context) => context,
                     Err(message) => {
                         return AnalyzeProjectResponse::Failed(Json(Error { message }));
                     }
@@ -168,7 +183,7 @@ impl AnalysisApi {
                         .find(|stored| stored.snapshot.id == analysis.snapshot.id)
                     {
                         Some(stored) => {
-                            AnalyzeProjectResponse::Created(Json(analysis_output(stored, &facts)))
+                            AnalyzeProjectResponse::Created(Json(analysis_output(stored, &context)))
                         }
                         None => AnalyzeProjectResponse::Failed(Json(Error {
                             message: "analysis was not stored".to_owned(),
@@ -211,18 +226,20 @@ impl AnalysisApi {
                 }));
             }
         };
-        match project_access(&self.state, &user, project_id, ProjectPermission::Operator).await {
-            ProjectAccess::Allowed { .. } => {}
-            ProjectAccess::Forbidden => {
-                return AnalyzeProjectResponse::Forbidden(Json(forbidden()));
-            }
-            ProjectAccess::Missing => {
-                return AnalyzeProjectResponse::Missing(Json(missing_project()));
-            }
-            ProjectAccess::Failed(message) => {
-                return AnalyzeProjectResponse::Failed(Json(Error { message }));
-            }
-        }
+        let project =
+            match project_access(&self.state, &user, project_id, ProjectPermission::Operator).await
+            {
+                ProjectAccess::Allowed { project, .. } => project,
+                ProjectAccess::Forbidden => {
+                    return AnalyzeProjectResponse::Forbidden(Json(forbidden()));
+                }
+                ProjectAccess::Missing => {
+                    return AnalyzeProjectResponse::Missing(Json(missing_project()));
+                }
+                ProjectAccess::Failed(message) => {
+                    return AnalyzeProjectResponse::Failed(Json(Error { message }));
+                }
+            };
         let snapshot = match discovery::scan_change(&self.state, project_id, number.0).await {
             Ok(snapshot) => snapshot,
             Err(discovery::DiscoveryError::ProjectNotFound)
@@ -238,13 +255,13 @@ impl AnalysisApi {
             }
         };
 
-        let facts = match facts_index(&self.state.database, project_id).await {
-            Ok(facts) => facts,
+        let context = match read_context(&self.state.database, &project).await {
+            Ok(context) => context,
             Err(message) => return AnalyzeProjectResponse::Failed(Json(Error { message })),
         };
 
         match SnapshotAnalysis::for_project(&self.state.database, project_id).await {
-            Ok(mut analyses) => match take_analysis(&mut analyses, snapshot.id, &facts) {
+            Ok(mut analyses) => match take_analysis(&mut analyses, snapshot.id, &context) {
                 Ok(output) => AnalyzeProjectResponse::Created(Json(output)),
                 Err(message) => AnalyzeProjectResponse::Failed(Json(Error { message })),
             },
@@ -350,6 +367,9 @@ struct FindingOutput {
     path: String,
     line_start: Option<u32>,
     line_end: Option<u32>,
+    /// Where the project's forge shows `line_start` at the head. Absent without a line, or
+    /// when the forge cannot be told from the project.
+    url: Option<String>,
     severity: String,
     title: String,
     detail: String,
@@ -558,21 +578,21 @@ enum DiscoverProjectResponse {
 
 async fn discovery_output(
     database: &Database,
-    project_id: Id<Project>,
+    project: &Project,
     discovery: discovery::Discovery,
 ) -> Result<DiscoveryOutput, String> {
-    let mut analyses = SnapshotAnalysis::for_project(database, project_id)
+    let mut analyses = SnapshotAnalysis::for_project(database, project.id)
         .await
         .map_err(|error| error.to_string())?;
-    let facts = facts_index(database, project_id).await?;
+    let context = read_context(database, project).await?;
     let default_branch = take_analysis(
         &mut analyses,
         discovery.default_branch.analysis.snapshot.id,
-        &facts,
+        &context,
     )?;
     let mut pull_requests = Vec::with_capacity(discovery.changes.len());
     for change in discovery.changes {
-        pull_requests.push(take_analysis(&mut analyses, change.snapshot.id, &facts)?);
+        pull_requests.push(take_analysis(&mut analyses, change.snapshot.id, &context)?);
     }
 
     Ok(DiscoveryOutput {
@@ -583,16 +603,19 @@ async fn discovery_output(
 
 /// Every fact this project's findings can be joined to, read once so a response that lists
 /// hundreds of findings makes one query and not hundreds.
-async fn facts_index(database: &Database, project_id: Id<Project>) -> Result<FactsIndex, String> {
-    PackageFacts::for_project(database, project_id)
-        .await
-        .map_err(|error| error.to_string())
+async fn read_context(database: &Database, project: &Project) -> Result<ReadContext, String> {
+    Ok(ReadContext {
+        facts: PackageFacts::for_project(database, project.id)
+            .await
+            .map_err(|error| error.to_string())?,
+        repository: Repository::from_remote(&project.remote, project.forge_kind).ok(),
+    })
 }
 
 fn take_analysis(
     analyses: &mut Vec<SnapshotAnalysis>,
     snapshot_id: Id<Snapshot>,
-    facts: &FactsIndex,
+    context: &ReadContext,
 ) -> Result<AnalysisOutput, String> {
     let Some(index) = analyses
         .iter()
@@ -601,10 +624,11 @@ fn take_analysis(
         return Err("discovery analysis was not stored".to_owned());
     };
 
-    Ok(analysis_output(analyses.remove(index), facts))
+    Ok(analysis_output(analyses.remove(index), context))
 }
 
-fn analysis_output(analysis: SnapshotAnalysis, facts: &FactsIndex) -> AnalysisOutput {
+fn analysis_output(analysis: SnapshotAnalysis, context: &ReadContext) -> AnalysisOutput {
+    let head = &analysis.snapshot.head;
     let status = analysis_status(&analysis.runs);
     let analyzers = analysis
         .runs
@@ -613,7 +637,7 @@ fn analysis_output(analysis: SnapshotAnalysis, facts: &FactsIndex) -> AnalysisOu
             let findings = stored_run
                 .findings
                 .into_iter()
-                .map(|finding| finding_output(finding, facts))
+                .map(|finding| finding_output(finding, head, context))
                 .collect::<Vec<_>>();
             let signals = stored_run
                 .signals
@@ -763,12 +787,16 @@ fn run_status_output(status: RunStatus) -> (String, Option<String>) {
     }
 }
 
-fn finding_output(finding: Finding, facts: &FactsIndex) -> FindingOutput {
-    let (path, line_start, line_end, package) = match finding.location {
+/// A line is linked at the snapshot head, because every analyzer that names a line reads it
+/// from the head.
+fn finding_output(finding: Finding, head: &CommitSha, context: &ReadContext) -> FindingOutput {
+    let (path, line_start, line_end, url, package) = match finding.location {
         Location::File { path, span } => (
             path.to_string(),
             span.map(|span| span.start),
             span.map(|span| span.end),
+            span.zip(context.repository.as_ref())
+                .map(|(span, repository)| repository.line_url(head, &path, span.start).into()),
             None,
         ),
         Location::Package {
@@ -782,11 +810,16 @@ fn finding_output(finding: Finding, facts: &FactsIndex) -> FindingOutput {
             // The cache is keyed by coordinate, and a git pin or a workspace member can share
             // a coordinate with a published package it is not.
             let known = matches!(origin, Some(PackageOrigin::PublicRegistry))
-                .then(|| facts.get(&(ecosystem.stored(), name.clone(), version.clone())))
+                .then(|| {
+                    context
+                        .facts
+                        .get(&(ecosystem.stored(), name.clone(), version.clone()))
+                })
                 .flatten();
 
             (
                 path.to_string(),
+                None,
                 None,
                 None,
                 Some(PackageOutput {
@@ -804,6 +837,7 @@ fn finding_output(finding: Finding, facts: &FactsIndex) -> FindingOutput {
         path,
         line_start,
         line_end,
+        url,
         severity: severity_output(finding.severity).to_owned(),
         title: finding.title,
         detail: finding.detail,

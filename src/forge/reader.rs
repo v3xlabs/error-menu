@@ -93,6 +93,8 @@ pub(crate) struct Repository {
     base: ApiBase,
     path: Vec<String>,
     kind: ForgeKind,
+    web: reqwest::Url,
+    file_at_commit: &'static [&'static str],
 }
 
 /// Where a forge answers: the base its API lives under, and the segments every endpoint
@@ -344,14 +346,30 @@ impl Repository {
             Some(port) => format!("{host}:{port}"),
             None => host.to_owned(),
         };
-        let base = match kind {
-            ForgeKind::Github => Github::api_base(host, &authority)?,
-            ForgeKind::Gitlab => Gitlab::api_base(host, &authority)?,
-            ForgeKind::Gitea | ForgeKind::Forgejo => Gitea::api_base(host, &authority)?,
+        let (base, file_at_commit) = match kind {
+            ForgeKind::Github => (Github::api_base(host, &authority)?, Github::FILE_AT_COMMIT),
+            ForgeKind::Gitlab => (Gitlab::api_base(host, &authority)?, Gitlab::FILE_AT_COMMIT),
+            ForgeKind::Gitea | ForgeKind::Forgejo => {
+                (Gitea::api_base(host, &authority)?, Gitea::FILE_AT_COMMIT)
+            }
             ForgeKind::Auto => return Err(ForgeReadError::ForgeType),
         };
+        // An ssh port is where git listens, not where the forge serves its pages.
+        let web_authority = if remote.scheme() == "https" {
+            authority.as_str()
+        } else {
+            host
+        };
+        let web = reqwest::Url::parse(&format!("https://{web_authority}/"))
+            .map_err(|_| ForgeReadError::RepositoryPath)?;
 
-        Ok(Self { base, path, kind })
+        Ok(Self {
+            base,
+            path,
+            kind,
+            web,
+            file_at_commit,
+        })
     }
 
     pub(crate) fn project_path(&self) -> String {
@@ -397,6 +415,26 @@ impl Repository {
             owned.push(segment);
         }
         drop(owned);
+        url
+    }
+
+    /// Where the forge shows one line of a file as it stood at `revision`.
+    pub(crate) fn line_url(
+        &self,
+        revision: &CommitSha,
+        path: &RepoPath,
+        line: u32,
+    ) -> reqwest::Url {
+        let mut url = self.web.clone();
+        let mut segments = url.path_segments_mut().expect("forge web URL has a path");
+        segments
+            .pop_if_empty()
+            .extend(&self.path)
+            .extend(self.file_at_commit)
+            .push(revision.as_str())
+            .extend(path.as_str().split('/'));
+        drop(segments);
+        url.set_fragment(Some(&format!("L{line}")));
         url
     }
 }
@@ -705,6 +743,55 @@ mod tests {
         assert_eq!(
             subject.repository_url("repos", &[]).as_str(),
             "https://forge.example.invalid:8443/api/v1/repos/team/service"
+        );
+    }
+
+    #[test]
+    fn each_forge_links_a_line_in_its_own_url_shape() {
+        let revision = CommitSha::new("02e6cd67b15ec75b07828510e0c96d2b1efd2e6f").unwrap();
+        let path = RepoPath::new("src/config file.rs").unwrap();
+        let url = |remote: &str, kind: ForgeKind| {
+            repository(remote, kind)
+                .line_url(&revision, &path, 12)
+                .to_string()
+        };
+
+        assert_eq!(
+            url("https://github.com/team/service.git", ForgeKind::Auto),
+            "https://github.com/team/service/blob/02e6cd67b15ec75b07828510e0c96d2b1efd2e6f/src/config%20file.rs#L12"
+        );
+        assert_eq!(
+            url("https://gitlab.com/group/subgroup/service", ForgeKind::Auto),
+            "https://gitlab.com/group/subgroup/service/-/blob/02e6cd67b15ec75b07828510e0c96d2b1efd2e6f/src/config%20file.rs#L12"
+        );
+        assert_eq!(
+            url("https://codeberg.org/team/service", ForgeKind::Forgejo),
+            "https://codeberg.org/team/service/src/commit/02e6cd67b15ec75b07828510e0c96d2b1efd2e6f/src/config%20file.rs#L12"
+        );
+    }
+
+    #[test]
+    fn a_line_link_keeps_an_https_port_and_drops_an_ssh_port() {
+        let revision = CommitSha::new("02e6cd67b15ec75b07828510e0c96d2b1efd2e6f").unwrap();
+        let path = RepoPath::new("a.rs").unwrap();
+
+        assert!(
+            repository(
+                "https://forge.example.invalid:8443/team/service",
+                ForgeKind::Gitea
+            )
+            .line_url(&revision, &path, 1)
+            .as_str()
+            .starts_with("https://forge.example.invalid:8443/team/service/")
+        );
+        assert!(
+            repository(
+                "ssh://git@forge.example.invalid:2222/team/service.git",
+                ForgeKind::Gitea
+            )
+            .line_url(&revision, &path, 1)
+            .as_str()
+            .starts_with("https://forge.example.invalid/team/service/")
         );
     }
 }
