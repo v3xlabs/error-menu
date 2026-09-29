@@ -57,12 +57,20 @@ const renderJobs = (state: QueuePageState): JSX.Element => {
                     <For each={group.jobs}>
                       {job => (
                         <li class="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 py-3">
-                          <a
-                            href={`/projects/${job.project_id}`}
-                            class="min-w-0 flex-1 truncate text-sm font-medium text-slate-900 hover:underline dark:text-slate-100"
+                          {/* A package version belongs to no project: it is fetched once for all of them. */}
+                          <Show
+                            when={job.project_id}
+                            fallback={<span class="min-w-0 flex-1 truncate font-mono text-sm text-slate-700 dark:text-slate-300">{job.subject}</span>}
                           >
-                            {state.names[job.project_id] ?? job.project_id}
-                          </a>
+                            {projectId => (
+                              <a
+                                href={`/projects/${projectId()}`}
+                                class="min-w-0 flex-1 truncate text-sm font-medium text-slate-900 hover:underline dark:text-slate-100"
+                              >
+                                {state.names[projectId()] ?? projectId()}
+                              </a>
+                            )}
+                          </Show>
                           <span class="font-mono text-xs text-slate-400 dark:text-slate-500">{job.kind}</span>
                           <span class="shrink-0">
                             <QueueStateBadge state={queueState([job])} time="clock" />
@@ -83,9 +91,16 @@ const renderJobs = (state: QueuePageState): JSX.Element => {
 
 export const QueuePage = () => {
   const [state, setState] = createSignal<QueuePageState>({ phase: "loading" });
+  let requestVersion = 0;
+  const cancelLoads = (): void => {
+    requestVersion += 1;
+  };
 
   const load = async (): Promise<void> => {
+    const request = ++requestVersion;
     const [jobs, projects] = await Promise.all([listJobs(), listProjects()]);
+
+    if (request !== requestVersion) return;
 
     if (!jobs.ok) {
       setState({ phase: "error", message: jobs.message });
@@ -104,6 +119,8 @@ export const QueuePage = () => {
     () => undefined,
     () => {
       void load();
+
+      return cancelLoads;
     },
   );
   createEffect(

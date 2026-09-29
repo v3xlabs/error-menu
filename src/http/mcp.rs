@@ -10,7 +10,7 @@ use crate::analysis::SnapshotAnalysis;
 use crate::app::AppState;
 use crate::http::auth::CurrentUser;
 use crate::prelude::*;
-use crate::worker::queue::{Job, JobKind, JobState};
+use crate::worker::queue::{Job, JobState};
 
 const JOB_PAGE: i64 = 50;
 
@@ -36,6 +36,7 @@ struct ProjectOutput {
 #[derive(Debug, Serialize, JsonSchema)]
 struct AnalysesOutput {
     analyses: Vec<AnalysisOutput>,
+    next_before: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -70,7 +71,8 @@ struct JobsOutput {
 #[derive(Debug, Serialize, JsonSchema)]
 struct JobOutput {
     job_id: String,
-    project_id: String,
+    project_id: Option<String>,
+    subject: String,
     kind: String,
     state: String,
     attempts: u64,
@@ -128,17 +130,27 @@ impl ErrorMenuTools {
     async fn list_analyses(
         &self,
         project_id: String,
+        before: Option<String>,
     ) -> Result<StructuredContent<AnalysesOutput>, String> {
         let (project, _) = self.readable_project(&project_id).await?;
-        let analyses = SnapshotAnalysis::for_project(&self.state.database, project.id)
-            .await
-            .map_err(|error| {
-                tracing::error!(%error, "MCP analysis listing failed");
-                "could not list analyses".to_owned()
-            })?;
+        let before = before
+            .map(|value| {
+                value
+                    .parse::<Id<Snapshot>>()
+                    .map_err(|error| error.to_string())
+            })
+            .transpose()?;
+        let (analyses, next_before) =
+            SnapshotAnalysis::page(&self.state.database, project.id, before, None, false)
+                .await
+                .map_err(|error| {
+                    tracing::error!(%error, "MCP analysis listing failed");
+                    "could not list analyses".to_owned()
+                })?;
 
         Ok(StructuredContent(AnalysesOutput {
             analyses: analyses.into_iter().map(analysis_output).collect(),
+            next_before: next_before.map(|id| id.encode()),
         }))
     }
 
@@ -293,11 +305,9 @@ fn analysis_output(analysis: SnapshotAnalysis) -> AnalysisOutput {
 fn job_output(job: Job) -> JobOutput {
     JobOutput {
         job_id: job.id.encode(),
-        project_id: job.project_id.encode(),
-        kind: match job.kind {
-            JobKind::Discover => "discover".to_owned(),
-            JobKind::PackageFacts => "package-facts".to_owned(),
-        },
+        project_id: job.work.project_id().map(|project_id| project_id.encode()),
+        subject: job.work.subject(),
+        kind: job.work.kind().to_owned(),
         state: match job.state {
             JobState::Queued => "queued".to_owned(),
             JobState::Running => "running".to_owned(),

@@ -49,10 +49,15 @@ export const listJobs = async (projectId?: string): Promise<Result<readonly Job[
   }
 };
 
-export const listAnalyses = async (projectId: string): Promise<Result<readonly Analysis[]>> => {
-  const response = await api("/projects/{project_id}/analyses", "get", { path: { project_id: projectId } });
+export type AnalysisPage = components["schemas"]["AnalysesOutput"];
 
-  if (response.status === 200) return { ok: true, value: response.data.analyses };
+export const listAnalyses = async (
+  projectId: string,
+  query: { before?: string; kind?: string; key?: string; latest?: boolean; } = {},
+): Promise<Result<AnalysisPage>> => {
+  const response = await api("/projects/{project_id}/analyses", "get", { path: { project_id: projectId }, query });
+
+  if (response.status === 200) return { ok: true, value: response.data };
 
   switch (response.status) {
     case 400: {

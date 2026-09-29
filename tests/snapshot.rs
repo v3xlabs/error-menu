@@ -1,8 +1,8 @@
-use error_menu::analysis::NewRun;
 use error_menu::analysis::finding::fingerprint::{Components, Fingerprint};
+use error_menu::analysis::{NewRun, SnapshotAnalysis};
 use error_menu::forge::{ChangeState, ForgeMetadata};
 use error_menu::prelude::*;
-use error_menu::registry::AUDIT;
+use error_menu::registry::{self, CHECKSUM_AUDIT, PACKAGE_AUDIT};
 
 const HEAD: &str = "8de08b979d673013e8a08a539e653d05a4087472";
 const BASE: &str = "560b6c2530fe1e9d0c29a3bfc23ffcfe1b788bd5";
@@ -140,8 +140,41 @@ impl Fixture {
         .expect("a facts row");
     }
 
+    async fn advise(&self, name: &str, advisory_id: &str, severity: &str) {
+        sqlx::query(
+            "INSERT INTO package_advisories \
+             (ecosystem, name, version, advisory_id, aliases, severity, summary, fixed_in) \
+             VALUES ('cargo', ?, '1.0.0', ?, 'CVE-2026-0001', ?, 'a problem', '1.0.1')",
+        )
+        .bind(name)
+        .bind(advisory_id)
+        .bind(severity)
+        .execute(&self.database.pool)
+        .await
+        .expect("an advisory row");
+    }
+
+    async fn audit_findings(&self, snapshot: &Snapshot) -> Vec<(Severity, String)> {
+        registry::audit(&self.database, self.subject.project_id)
+            .await
+            .expect("audits");
+        let analysis =
+            SnapshotAnalysis::for_snapshot(&self.database, self.subject.project_id, snapshot.id)
+                .await
+                .expect("reads analysis")
+                .expect("the analysis exists");
+
+        analysis
+            .runs
+            .into_iter()
+            .filter(|run| run.run.analyzer == PACKAGE_AUDIT)
+            .flat_map(|run| run.findings)
+            .map(|finding| (finding.severity, finding.title))
+            .collect()
+    }
+
     async fn awaiting_audit(&self) -> Vec<Id<Snapshot>> {
-        Snapshot::awaiting_audit(&self.database, self.subject.project_id, AUDIT)
+        Snapshot::awaiting_audit(&self.database, self.subject.project_id, CHECKSUM_AUDIT)
             .await
             .expect("reads")
     }
@@ -255,4 +288,99 @@ async fn a_package_from_outside_the_public_registry_is_not_audited() {
         fixture.awaiting_audit().await.is_empty(),
         "a snapshot with no public-registry package waits for an audit"
     );
+}
+
+#[tokio::test]
+async fn an_arriving_package_with_an_advisory_is_reported_at_its_rating() {
+    let fixture = Fixture::build().await;
+    let snapshot = fixture.analyse().await;
+    fixture
+        .lock(
+            &snapshot,
+            &[
+                ("serde", PackageOrigin::PublicRegistry),
+                ("anyhow", PackageOrigin::PublicRegistry),
+            ],
+        )
+        .await;
+    fixture.answer("serde", "known").await;
+    fixture.answer("anyhow", "known").await;
+    fixture.advise("serde", "GHSA-aaaa-bbbb-cccc", "high").await;
+    fixture
+        .advise("serde", "RUSTSEC-2026-0001", "informational")
+        .await;
+
+    assert_eq!(
+        fixture.audit_findings(&snapshot).await,
+        [
+            (
+                Severity::High,
+                "serde 1.0.0 is affected by GHSA-aaaa-bbbb-cccc".to_owned()
+            ),
+            (
+                Severity::Low,
+                "serde 1.0.0 is affected by RUSTSEC-2026-0001".to_owned()
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn analysing_a_linked_observation_reads_new_runs_and_replaces_index() {
+    let fixture = Fixture::build().await;
+    let original = fixture.analyse().await;
+    fixture.attach_run(&original).await;
+    original
+        .mark_analysed(&fixture.database)
+        .await
+        .expect("indexes original");
+
+    let other = Subject::upsert(
+        &fixture.database,
+        fixture.subject.project_id,
+        SubjectKind::Change { number: 4 },
+    )
+    .await
+    .expect("a second subject");
+    let linked = Snapshot::observe(
+        &fixture.database,
+        other.id,
+        sha(HEAD),
+        Some(sha(BASE)),
+        metadata(),
+        Some(&original),
+    )
+    .await
+    .expect("a linked observation");
+
+    let rescanned = Snapshot::record(
+        &fixture.database,
+        other.id,
+        sha(HEAD),
+        Some(sha(BASE)),
+        Some(sha(MERGE_BASE)),
+        metadata(),
+    )
+    .await
+    .expect("records a new analysis");
+    fixture.attach_run(&rescanned).await;
+    rescanned
+        .mark_analysed(&fixture.database)
+        .await
+        .expect("indexes new analysis");
+
+    assert_ne!(rescanned.id, linked.id);
+    let indexed = Snapshot::indexed(&fixture.database, other.project_id, &sha(HEAD))
+        .await
+        .expect("looks up index")
+        .expect("indexed snapshot");
+    assert_eq!(indexed.id, rescanned.id);
+
+    let analysis =
+        SnapshotAnalysis::for_snapshot(&fixture.database, other.project_id, rescanned.id)
+            .await
+            .expect("reads analysis")
+            .expect("new analysis is readable");
+    assert_eq!(analysis.runs.len(), 1);
+    assert_eq!(analysis.runs[0].run.snapshot_id, rescanned.id);
 }

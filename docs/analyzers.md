@@ -12,7 +12,9 @@ or workflow commands.
 ## Implemented analyzers
 
 `lockfile-delta` compares supported lockfiles. It reports package additions, removals, version
-moves, changed sources, and changed integrity data.
+moves, changed sources, and changed integrity data. A flake input is named by its repository
+(`github:NixOS/nixpkgs`, with `?host=` for a forge other than the public one), so an input that
+moves to a new revision in a different repository is a changed source, not a version move.
 
 `manifest-delta` compares `Cargo.toml` and `package.json` dependency declarations.
 
@@ -57,32 +59,49 @@ not change during migration.
 
 No analyzer reads a package registry. A scan must not wait on somebody else's server, and
 what a registry says about `serde 1.0.200` is the same answer for every project that locks
-it, so `package_facts` is keyed by ecosystem, name and version alone and a `package-facts`
-job fills it after an analysis records package findings. Only a package the lockfile
+it, so `package_facts` is keyed by ecosystem, name and version alone and each version is
+fetched by its own `package-facts` job, queued when an analysis records it. Only a package the lockfile
 resolved from the public registry is fetched or shown with facts: a workspace member, a git
 pin or a private registry package can share a public name and version and be different
 bytes. Cargo facts come from the crates.io version and crate endpoints, paced to one
-crates.io request per second, and the docs.rs status file. npm facts come from
-`registry.npmjs.org`, with weekly downloads from `api.npmjs.org` and install size and
-vulnerability counts from npmx.dev; those three reads are allowed to fail without failing
-the row. A flake input has no registry, so it is never fetched.
+crates.io request per second, the docs.rs status file, and advisories from OSV, which carries
+both the GitHub advisory database and RustSec; a GitHub record and its RustSec twin name each
+other as aliases and are kept as one advisory. npm facts come from `registry.npmjs.org`, with
+weekly downloads from `api.npmjs.org`, and install size, dependency count and advisories from
+npmx.dev. npmx walks the whole install tree, and only the advisories published against the
+package itself are kept, because each dependency is its own coordinate with its own facts.
+The advisory read is required: a row without it would tell the audit nothing is known against
+the version. Size and downloads are allowed to fail without failing the row. A flake input has
+no registry, so it is never fetched.
 
-One job reads at most 200 coordinates and stops after half the job lease; what is left
-queues another job. A failed read is cached for 15 minutes and fails the job attempt, so the
-job retries after that time.
+A version the cache already answers is not read again, whichever project asked. A failed
+read is cached for 15 minutes and the job retries after that time. A registry that answers
+429 makes every job that reads it wait, and nothing else. A sweep every ten minutes queues
+any version that has no answer, which is how the cache refills after it is emptied.
+
+When a fetch completes the last answer a snapshot was waiting on, it queues a
+`package-audit` job for that snapshot's project.
 
 Package links (registry, docs, source) are sent as written, each with a status. A link is
 `safe` only when sanitising it (https only, no credentials, no control characters, dot
 segments or unencoded characters) leaves it unchanged. Any other link is `suspicious`: the
 web client shows it in red with the raw URL in its tooltip, and does not make it followable.
 
-`checksum-audit` is a run identifier rather than a selectable analyzer. It compares what a
-lockfile claims a package hashes to against what the publisher published, which needs the
-facts, which arrive after the analysis has finished. The facts job records it as its own
-run on the snapshot it audited, so the finding still belongs to exactly one run and no
-finished run is written to twice. A snapshot is audited only when every public-registry
-package with a lockfile integrity has a known or absent answer, because the run marks the
-snapshot as done. It is absent from the default set and `evaluate` has no arm for it.
+`checksum-audit` and `package-audit` are run identifiers rather than selectable analyzers.
+Both need the facts, which arrive after the analysis has finished, so the facts job records
+each as its own run on the snapshot it audited: a finding still belongs to exactly one run
+and no finished run is written to twice. A snapshot is audited only when every
+public-registry package it names has a known or absent answer, because the run marks the
+snapshot as done. Neither is in the default set and `evaluate` has no arm for them.
+
+`checksum-audit` compares what a lockfile claims a package hashes to against what the
+publisher published. `package-audit` looks at each public-registry version the snapshot
+brings in (added, upgraded, downgraded or changed) and reports each advisory at its rating
+(critical and high as themselves, moderate and unrated as medium, low and RustSec notices
+such as `unmaintained` as low), a yanked or deprecated version as medium, and a version of
+5 MB or more as medium. The size is the package's own published size (npm unpacked size, the
+compressed Cargo crate), not its install tree: each dependency arrives as its own coordinate
+and is weighed there. A removed version leaves with its problems and is not reported.
 
 ## Deferred work
 

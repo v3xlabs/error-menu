@@ -80,18 +80,24 @@ impl Signal {
         .fetch_all(&database.pool)
         .await?;
 
-        rows.into_iter()
-            .map(|row| {
-                Ok(Signal {
-                    run_id,
-                    snapshot_id,
-                    key: SignalKey::read(&row, "signal_key")?,
-                    value: SignalValue::decode_row(&row)?,
-                    confidence: confidence_from_stored(row.try_get("confidence")?)?,
-                    reason: row.try_get("reason")?,
-                })
-            })
+        rows.iter()
+            .map(|row| Self::decode_row(row, run_id, snapshot_id))
             .collect()
+    }
+
+    pub fn decode_row(
+        row: &SqliteRow,
+        run_id: Id<Run>,
+        snapshot_id: Id<Snapshot>,
+    ) -> Result<Signal, DatabaseError> {
+        Ok(Signal {
+            run_id,
+            snapshot_id,
+            key: SignalKey::read(row, "signal_key")?,
+            value: SignalValue::decode_row(row)?,
+            confidence: confidence_from_stored(row.try_get("confidence")?)?,
+            reason: row.try_get("reason")?,
+        })
     }
 }
 

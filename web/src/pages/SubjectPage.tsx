@@ -33,20 +33,108 @@ const isQuiet = (run: AnalyzerRun): boolean =>
   runTone(run) === "clear" && run.finding_count === 0 && run.signals.length === 0 && run.detail === undefined;
 
 type RunState = { phase: "ready"; } | { phase: "running"; } | { phase: "error"; message: string; };
-type HistoryState = { phase: "loading"; } | { phase: "loaded"; analyses: readonly Analysis[]; } | { phase: "error"; message: string; };
+type HistoryState = { phase: "loading"; } | { phase: "loaded"; analyses: readonly Analysis[]; nextBefore: string | undefined; } | { phase: "error"; message: string; };
 
 export const SubjectPage = () => {
   const [historyState, setHistoryState] = createSignal<HistoryState>({ phase: "loading" });
   const [project, setProject] = createSignal<components["schemas"]["ProjectOutput"]>();
   const [projectError, setProjectError] = createSignal<string | null>(null);
   const [runState, setRunState] = createSignal<RunState>({ phase: "ready" });
+  const [isLoadingMore, setIsLoadingMore] = createSignal(false);
+  const [moreError, setMoreError] = createSignal<string | null>(null);
+  const [mergedAnalyses, setMergedAnalyses] = createSignal<readonly Analysis[]>([]);
   const routeParameters = useParams<{ projectId: string; kind: string; key: string; }>();
   const [searchParameters] = useSearchParams<{ head: string; }>();
+  let routeVersion = 0;
+  let projectRead = 0;
+  let historyRead = 0;
+  let scanRead = 0;
+
+  const isCurrent = (projectId: string, kind: string, key: string, version: number): boolean =>
+    routeParameters.projectId === projectId
+    && routeParameters.kind === kind
+    && routeParameters.key === key
+    && routeVersion === version;
+
+  const loadHistory = async (projectId: string, kind: string, key: string): Promise<void> => {
+    if (routeParameters.projectId !== projectId || routeParameters.kind !== kind || routeParameters.key !== key) return;
+
+    const version = routeVersion;
+    const request = ++historyRead;
+    const analyses: Analysis[] = [];
+    const head = searchParameters.head;
+    let before: string | undefined;
+
+    do {
+      const result = await listAnalyses(projectId, { kind, key, ...(before !== undefined && { before }) });
+
+      if (request !== historyRead || !isCurrent(projectId, kind, key, version)) return;
+
+      if (!result.ok) {
+        setHistoryState({ phase: "error", message: result.message });
+
+        return;
+      }
+
+      analyses.push(...result.value.analyses);
+      before = result.value.next_before;
+    } while (head !== undefined && before !== undefined && analyses.every(analysis => analysis.head_sha !== head));
+
+    setHistoryState({ phase: "loaded", analyses, nextBefore: before });
+  };
+  const loadMore = async (): Promise<void> => {
+    const loaded = historyState();
+
+    if (loaded.phase !== "loaded" || loaded.nextBefore === undefined || isLoadingMore()) return;
+
+    const { projectId, kind, key } = routeParameters;
+    const version = routeVersion;
+    const request = ++historyRead;
+
+    setMoreError(null);
+    setIsLoadingMore(true);
+    const result = await listAnalyses(projectId, { kind, key, before: loaded.nextBefore });
+
+    if (request !== historyRead || !isCurrent(projectId, kind, key, version)) return;
+
+    setIsLoadingMore(false);
+
+    if (!result.ok) {
+      setMoreError(result.message);
+
+      return;
+    }
+
+    setHistoryState({ phase: "loaded", analyses: [...loaded.analyses, ...result.value.analyses], nextBefore: result.value.next_before });
+  };
+  const loadMergedChanges = async (projectId: string, kind: string, key: string): Promise<void> => {
+    if (kind !== "branch") return;
+
+    const version = routeVersion;
+    const analyses: Analysis[] = [];
+    let before: string | undefined;
+
+    do {
+      const result = await listAnalyses(projectId, { latest: true, ...(before !== undefined && { before }) });
+
+      if (!isCurrent(projectId, kind, key, version) || !result.ok) return;
+
+      analyses.push(...result.value.analyses);
+      before = result.value.next_before;
+    } while (before !== undefined);
+
+    setMergedAnalyses(analyses);
+  };
 
   const analyses = (): readonly Analysis[] => {
     const current = historyState();
 
     return current.phase === "loaded" ? current.analyses : [];
+  };
+  const hasMore = (): boolean => {
+    const state = historyState();
+
+    return state.phase === "loaded" && state.nextBefore !== undefined;
   };
   const history = (): readonly Analysis[] =>
     latestPerHead(
@@ -66,7 +154,7 @@ export const SubjectPage = () => {
   const mergedBy = (): Analysis | undefined => {
     const analysis = current();
 
-    return analysis === undefined ? undefined : mergedChangeFor(analyses(), analysis.head_sha);
+    return analysis === undefined ? undefined : mergedChangeFor(mergedAnalyses(), analysis.head_sha);
   };
 
   const canOperate = (): boolean => {
@@ -87,9 +175,18 @@ export const SubjectPage = () => {
       return;
     }
 
+    const { projectId, kind, key } = routeParameters;
+
+    if (analysis.subject.kind !== kind || analysis.subject.key !== key) return;
+
+    const version = routeVersion;
+    const request = ++scanRead;
+
     setRunState({ phase: "running" });
 
-    const result = await scanChange(routeParameters.projectId, Number(analysis.subject.key));
+    const result = await scanChange(projectId, Number(analysis.subject.key));
+
+    if (request !== scanRead || !isCurrent(projectId, kind, key, version)) return;
 
     if (!result.ok) {
       setRunState({ phase: "error", message: result.message });
@@ -98,25 +195,35 @@ export const SubjectPage = () => {
     }
 
     setRunState({ phase: "ready" });
-
-    const refreshed = await listAnalyses(routeParameters.projectId);
-
-    setHistoryState(refreshed.ok
-      ? { phase: "loaded", analyses: refreshed.value }
-      : { phase: "error", message: refreshed.message });
+    await loadHistory(projectId, kind, key);
   };
 
   createEffect(
-    () => routeParameters.projectId,
-    (projectId) => {
+    () => [routeParameters.projectId, routeParameters.kind, routeParameters.key, searchParameters.head] as const,
+    ([projectId, kind, key]) => {
+      const version = ++routeVersion;
+      const request = ++projectRead;
+
+      setIsLoadingMore(false);
+      setMoreError(null);
+      setMergedAnalyses([]);
+      setHistoryState({ phase: "loading" });
+      setProject(undefined);
+      setProjectError(null);
+      setRunState({ phase: "ready" });
       void readProject(projectId).then((result) => {
+        if (request !== projectRead || !isCurrent(projectId, kind, key, version)) return;
+
         setProjectError(result.ok ? null : result.message);
 
         if (result.ok) setProject(result.value);
       });
-      void listAnalyses(projectId).then((result) => {
-        setHistoryState(result.ok ? { phase: "loaded", analyses: result.value } : { phase: "error", message: result.message });
-      });
+      void loadHistory(projectId, kind, key);
+      void loadMergedChanges(projectId, kind, key);
+
+      return () => {
+        routeVersion += 1;
+      };
     },
   );
 
@@ -325,6 +432,17 @@ export const SubjectPage = () => {
             </ul>
           </section>
         </Show>
+        <Show when={hasMore()}>
+          <button
+            type="button"
+            disabled={isLoadingMore()}
+            onClick={() => void loadMore()}
+            class="rounded-control bg-raised px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-60 dark:text-slate-300"
+          >
+            {isLoadingMore() ? "Loading..." : "Load older scans"}
+          </button>
+        </Show>
+        <Show when={moreError()}>{message => <p role="alert" class="text-sm text-red-600 dark:text-red-400">{message()}</p>}</Show>
       </div>
     );
   };

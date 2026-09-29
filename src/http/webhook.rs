@@ -16,7 +16,7 @@ use crate::forge::github::installation::{CoveredRepository, GithubInstallation};
 use crate::forge::report::{Reporting, Step};
 use crate::prelude::*;
 use crate::worker::discovery;
-use crate::worker::queue::{Job, JobKind};
+use crate::worker::queue::{Job, Work};
 
 /// GitHub caps a delivery at 25 MB.
 const MAX_DELIVERY_BYTES: usize = 25 * 1024 * 1024;
@@ -279,7 +279,13 @@ async fn moved(
     head: CommitSha,
 ) -> Result<(), DatabaseError> {
     for project in Project::on_github(&state.database, full_name).await? {
-        Job::enqueue(&state.database, project.id, JobKind::Discover).await?;
+        Job::enqueue(
+            &state.database,
+            &Work::Discover {
+                project_id: project.id,
+            },
+        )
+        .await?;
         let state = Arc::clone(state);
         let head = head.clone();
         tokio::spawn(async move {
@@ -319,7 +325,13 @@ async fn rerun(
                 if let Some(reporting) = Reporting::for_project(state, &project).await? {
                     reporting.forget(&state.database, &head).await?;
                 }
-                Job::enqueue(&state.database, project.id, JobKind::Discover).await?;
+                Job::enqueue(
+                    &state.database,
+                    &Work::Discover {
+                        project_id: project.id,
+                    },
+                )
+                .await?;
             }
         }
     }

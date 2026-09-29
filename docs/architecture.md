@@ -34,9 +34,11 @@ lets a worker tick and a request run the same analysis code.
 The queue is a table in the same database, not a message broker.
 
 ```
-jobs(id, project_id, subject_id, kind, priority, state,
+jobs(id, project_id, kind, subject, priority, state,
      claimed_by, lease_expires_at, attempts, last_error,
-     available_at, created_at)
+     available_at, created_at, finished_at)
+job_resources(job_id, resource, capacity)
+resource_blocks(resource, blocked_until, reason)
 ```
 
 A timer reclaims expired leases. Every job ends by writing analyzer results to the database, so
@@ -44,6 +46,32 @@ keeping the queue in that same database makes "store the results and mark the jo
 transaction that cannot half happen. A broker would give at least once delivery, which forces
 every analyzer to be idempotent anyway, and adds a failure mode where the job is acknowledged but
 its results are lost. A table is also inspectable, which matters at three in the morning.
+
+A job is its `kind` and its `subject`: a project id for discovery and audits, `npm:name@1.2.3`
+for a package version, which belongs to no project. Asking again for work that is already
+waiting is the same job, so two projects that lock one version cause one registry read.
+
+A job also names the resources it uses, each with a capacity from `worker/resource.rs`:
+
+| Resource | Capacity | Held by |
+|---|---|---|
+| `mirror:<project>` | 1 | discovery of that project, so one mirror is never fetched twice at once |
+| `discovery` | 2 | every discovery: cloning and analysing is disk and CPU |
+| `npm` | 4 | npm reads: registry.npmjs.org, api.npmjs.org, npmx.dev |
+| `crates.io` | 1 | Cargo reads, which pace themselves to crates.io's one request a second |
+| `osv` | 4 | Cargo reads, for advisories |
+| `audit` | 1 | audits, which only write |
+
+A worker claims the oldest ready job whose resources all have a free slot and none is blocked,
+and passes over any job that cannot run yet, so a busy registry never holds up discovery. A
+registry that answers 429 blocks its resource in `resource_blocks` until the time it gave;
+only the jobs that need that resource wait. A forge budget belongs to a credential rather than
+a host, so a discovery that runs out defers itself instead of blocking the forge. The app runs
+one worker per slot of the global resources, so every kind of work always finds a worker. The
+schedule runs apart from the workers, so a long job never delays queueing a due project.
+
+When the workers leave the app process, the claim becomes the lease endpoint: the app keeps the
+only writer and the resource counts, and a worker asks it for work it is able to do.
 
 ## What a poll costs
 
@@ -58,6 +86,12 @@ it sees it, and a change that waits for its first scan is seen again on every po
 analysis takes over the reading that has no run behind it rather than writing a second one
 beside it. A reader asking for a re-scan of a head that already has runs gets a new reading:
 that one is a fresh answer, not a repeat of the same sighting.
+
+The analyses API reads at most fifty snapshots per request. `before` uses the last snapshot ID
+returned by `next_before` to read older entries. `kind` and `key` select one subject's history;
+`latest=true` selects the newest reading per subject before pagination. Project dashboards use
+that latest-per-subject view, and a subject page loads older readings on request. A scan response
+loads only its requested snapshot.
 
 Anything git publishes is read from git. The default branch and its head come from the ref
 advertisement that opens every connection to the remote, which costs one round trip, no
@@ -113,9 +147,18 @@ interesting if several apps must be live at once.
 
 ## Worker trust
 
-Workers touch untrusted repository content. A worker can lease a job and post a result, and
-nothing else. It has no database access, no forge credentials, and no host filesystem access.
-This is a security boundary first and a scaling unit second.
+The current worker runs in the app process and reads SQLite, forge credentials, and local mirrors.
+Repository clone and fetch use gix transports, including an external SSH process. URL validation
+does not constrain the address of the socket that gix opens: a domain can resolve to an internal
+address after validation. Forge HTTP uses a resolver that rejects non-public addresses at
+connection time, but that protection does not apply to gix or its SSH child process.
+
+Before admitting untrusted project remotes, deploy the process and its children with an egress
+policy that rejects loopback, private, link-local, and other non-public IPv4 and IPv6 destinations
+at socket connect. Permit DNS through a controlled path. Verify the network implementation's
+handling of pod-local loopback, redirects, and translated addresses; a Kubernetes NetworkPolicy
+alone may not cover every one of these paths. A future separate worker process can have this
+policy without restricting the app's local HTTP traffic.
 
 ## Work sources
 

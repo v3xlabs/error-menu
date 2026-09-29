@@ -13,7 +13,6 @@ use crate::forge::github::installation::GithubInstallation;
 use crate::forge::reader::{ForgeReadError, ForgeReader};
 use crate::prelude::*;
 use crate::vcs::mirror::{ChangedFile, FileChange, Mirror, MirrorError};
-use crate::worker::queue::{Job, JobKind};
 
 const MAX_SECRET_SCAN_BYTES: u64 = 32 * 1024 * 1024;
 pub const DEFAULT_ANALYZERS: [&str; 8] = [
@@ -257,10 +256,11 @@ pub async fn run_target_in_mirror(
     }
     snapshot.mark_analysed(&state.database).await?;
 
-    // The registries are read on their own job: a scan must not wait on somebody else's
+    // The registries are read on their own jobs: a scan must not wait on somebody else's
     // server, and what they answer is the same for every project that locks the version.
     if packages_seen {
-        Job::enqueue(&state.database, project.id, JobKind::PackageFacts).await?;
+        crate::registry::queue_for_snapshot(&state.database, project.id, snapshot.id).await?;
+        state.queue_wake.notify_waiters();
     }
 
     Ok(Analysis {

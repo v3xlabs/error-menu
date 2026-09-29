@@ -175,30 +175,32 @@ impl Finding {
         .fetch_all(&database.pool)
         .await?;
 
-        rows.into_iter()
-            .map(|row| {
-                Ok(Finding {
-                    movement: row
-                        .try_get::<Option<String>, _>("movement")?
-                        .map(|value| VersionMovement::from_stored(&value))
-                        .transpose()?,
-                    id: Id::from_raw(row.try_get("id")?),
-                    run_id,
-                    issue_id: Id::from_raw(row.try_get("issue_id")?),
-                    fingerprint: Fingerprint {
-                        version: row.try_get::<i64, _>("fingerprint_version")? as u32,
-                        hash: row.try_get("fingerprint")?,
-                        canonical: row.try_get("fingerprint_canonical")?,
-                    },
-                    location: Location::decode_row(&row)?,
-                    severity: Severity::read(&row, "severity")?,
-                    confidence: confidence_from_stored(row.try_get("confidence")?)?,
-                    attribution: Attribution::read(&row, "attribution")?,
-                    title: row.try_get("title")?,
-                    detail: row.try_get("detail")?,
-                })
-            })
+        rows.iter()
+            .map(|row| Self::decode_row(row, run_id))
             .collect()
+    }
+
+    pub fn decode_row(row: &SqliteRow, run_id: Id<Run>) -> Result<Finding, DatabaseError> {
+        Ok(Finding {
+            movement: row
+                .try_get::<Option<String>, _>("movement")?
+                .map(|value| VersionMovement::from_stored(&value))
+                .transpose()?,
+            id: Id::from_raw(row.try_get("id")?),
+            run_id,
+            issue_id: Id::from_raw(row.try_get("issue_id")?),
+            fingerprint: Fingerprint {
+                version: row.try_get::<i64, _>("fingerprint_version")? as u32,
+                hash: row.try_get("fingerprint")?,
+                canonical: row.try_get("fingerprint_canonical")?,
+            },
+            location: Location::decode_row(row)?,
+            severity: Severity::read(row, "severity")?,
+            confidence: confidence_from_stored(row.try_get("confidence")?)?,
+            attribution: Attribution::read(row, "attribution")?,
+            title: row.try_get("title")?,
+            detail: row.try_get("detail")?,
+        })
     }
 }
 
