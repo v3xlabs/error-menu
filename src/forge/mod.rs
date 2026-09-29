@@ -26,6 +26,9 @@ pub(crate) trait Forge {
     /// Where this forge publishes the head of a change.
     fn change_ref(number: u64) -> String;
 
+    /// The path segments this forge puts between a repository's web page and a commit.
+    const FILE_AT_COMMIT: &'static [&'static str];
+
     /// A credential this forge offers of its own, and the host to send it to. Most have
     /// none. An app registered with a forge can raise that forge's budget without asking
     /// any person for a permission over their account.

@@ -23,6 +23,8 @@ impl Forge for Gitea {
         format!("refs/pull/{number}/head")
     }
 
+    const FILE_AT_COMMIT: &'static [&'static str] = &["src", "commit"];
+
     async fn changes(api: &Api<'_>) -> Result<Vec<DiscoveredChange>, ForgeReadError> {
         let changes: Vec<GiteaChange> = api
             .get_with_query(

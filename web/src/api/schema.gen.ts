@@ -2898,6 +2898,11 @@ export interface components {
             line_start?: number;
             /** Format: uint32 */
             line_end?: number;
+            /**
+             * @description Where the project's forge shows `line_start` at the head. Absent without a line, or
+             *     when the forge cannot be told from the project.
+             */
+            url?: string;
             severity: string;
             title: string;
             detail: string;
