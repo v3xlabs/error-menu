@@ -3,6 +3,7 @@ mod nix;
 mod npm;
 mod pnpm;
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use crate::analysis::finding::fingerprint::{Components, Fingerprint};
@@ -342,8 +343,8 @@ fn movement(departures: &[&LockedPackage], arrival: &LockedPackage) -> (VersionM
     };
 
     let (direction, wording) = match compare_versions(&departure.version, &arrival.version) {
-        Some(std::cmp::Ordering::Less) => (VersionMovement::Upgraded, "was upgraded"),
-        Some(std::cmp::Ordering::Greater) => (VersionMovement::Downgraded, "was downgraded"),
+        Some(Ordering::Less) => (VersionMovement::Upgraded, "was upgraded"),
+        Some(Ordering::Greater) => (VersionMovement::Downgraded, "was downgraded"),
         _ => (VersionMovement::Changed, "changed"),
     };
 
@@ -356,36 +357,61 @@ fn movement(departures: &[&LockedPackage], arrival: &LockedPackage) -> (VersionM
     )
 }
 
-/// Compares the numeric parts of two versions numerically and the rest as text, so that
-/// 1.10.0 follows 1.9.0. Answers `None` unless both sides start with a number, because a
-/// flake.lock pins a commit sha where one revision is neither above nor below another.
-fn compare_versions(left: &str, right: &str) -> Option<std::cmp::Ordering> {
-    let left = segments(left)?;
-    let right = segments(right)?;
+/// Orders two versions by semver precedence: build metadata after `+` is ignored, and a
+/// pre-release after `-` sorts below its release, so 1.0.0-beta.5 precedes 1.0.0. Answers
+/// `None` unless both sides start with a number, because a flake.lock pins a commit sha
+/// where one revision is neither above nor below another.
+fn compare_versions(left: &str, right: &str) -> Option<Ordering> {
+    let (left_core, left_pre_release) = precedence_parts(left)?;
+    let (right_core, right_pre_release) = precedence_parts(right)?;
 
-    for (left, right) in left.iter().zip(right.iter()) {
-        let order = match (left.parse::<u64>(), right.parse::<u64>()) {
-            (Ok(left), Ok(right)) => left.cmp(&right),
-            _ => left.as_str().cmp(right.as_str()),
-        };
+    let pre_release = match (left_pre_release, right_pre_release) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(left), Some(right)) => compare_identifiers(left, right),
+    };
 
-        if order != std::cmp::Ordering::Equal {
-            return Some(order);
-        }
-    }
-
-    Some(left.len().cmp(&right.len()))
+    Some(compare_identifiers(left_core, right_core).then(pre_release))
 }
 
-fn segments(value: &str) -> Option<Vec<String>> {
-    let segments = value
-        .split(|character: char| !character.is_ascii_alphanumeric())
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+fn precedence_parts(version: &str) -> Option<(&str, Option<&str>)> {
+    let version = version
+        .split_once('+')
+        .map_or(version, |(version, _)| version);
+    let (core, pre_release) = match version.split_once('-') {
+        Some((core, pre_release)) => (core, Some(pre_release)),
+        None => (version, None),
+    };
 
-    segments.first()?.parse::<u64>().ok()?;
+    core.split('.').next()?.parse::<u64>().ok()?;
 
-    Some(segments)
+    Some((core, pre_release))
+}
+
+/// Numeric identifiers compare as numbers and sort below alphanumeric ones, so 1.10.0
+/// follows 1.9.0 and beta.11 follows beta.2.
+fn compare_identifiers(left: &str, right: &str) -> Ordering {
+    let mut left = left.split('.');
+    let mut right = right.split('.');
+
+    loop {
+        let order = match (left.next(), right.next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(left), Some(right)) => match (left.parse::<u64>(), right.parse::<u64>()) {
+                (Ok(left), Ok(right)) => left.cmp(&right),
+                (Ok(_), Err(_)) => Ordering::Less,
+                (Err(_), Ok(_)) => Ordering::Greater,
+                (Err(_), Err(_)) => left.cmp(right),
+            },
+        };
+
+        if order != Ordering::Equal {
+            return order;
+        }
+    }
 }
 
 struct Reported<'a> {
@@ -559,6 +585,30 @@ mod tests {
             findings[0].detail,
             "serde was downgraded from 1.0.10 to 1.0.9"
         );
+    }
+
+    #[test]
+    fn a_pre_release_sorts_below_its_release() {
+        let moves = [
+            ("1.0.0-beta.5", "1.0.0", "was upgraded"),
+            ("1.0.0-beta.2", "1.0.0-beta.11", "was upgraded"),
+            ("1.0.0-beta.11", "1.0.0-rc.1", "was upgraded"),
+            ("1.0.0", "1.0.0-rc.1", "was downgraded"),
+            ("1.0.0+build.2", "1.0.0+build.1", "changed"),
+        ];
+
+        for (from, to, wording) in moves {
+            let base = cargo_lock(&[("serde", from, Some("registry"), Some("aaa"))]);
+            let head = cargo_lock(&[("serde", to, Some("registry"), Some("bbb"))]);
+
+            let findings = run(&base, &head);
+
+            assert_eq!(findings.len(), 1);
+            assert_eq!(
+                findings[0].detail,
+                format!("serde {wording} from {from} to {to}")
+            );
+        }
     }
 
     #[test]
